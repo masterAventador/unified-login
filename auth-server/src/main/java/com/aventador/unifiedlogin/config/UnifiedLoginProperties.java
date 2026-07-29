@@ -5,7 +5,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 import java.util.List;
 
 @ConfigurationProperties(prefix = "unified-login")
-public record UnifiedLoginProperties(List<ClientConfig> clients) {
+public record UnifiedLoginProperties(String jwtKeyStore, List<ClientConfig> clients) {
 
     public record ClientConfig(String clientId, String clientName, List<String> redirectUris) {
     }
