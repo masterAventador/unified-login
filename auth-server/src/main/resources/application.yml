@@ -25,6 +25,7 @@ spring:
     locations: classpath:db/migration
 
 unified-login:
+  issuer: ${ISSUER_URL:http://localhost:9000}
   jwt-key-store: ${JWT_KEY_STORE:./data/jwt-signing-key.json}
   clients:
     - client-id: demo-web-a

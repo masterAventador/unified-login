@@ -24,6 +24,7 @@ import org.springframework.security.web.util.matcher.MediaTypeRequestMatcher;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.nio.file.Path;
+import java.util.Objects;
 
 @Configuration
 public class AuthorizationServerConfig {
@@ -31,6 +32,8 @@ public class AuthorizationServerConfig {
     @Bean
     @Order(1)
     public SecurityFilterChain authorizationServerSecurityFilterChain(HttpSecurity http) throws Exception {
+        // Spring Security 7 中该类没有 authorizationServer() 静态工厂（那是旧 1.x 的 API），
+        // 用无参构造——照旧文档写静态工厂会编译失败
         OAuth2AuthorizationServerConfigurer authorizationServerConfigurer =
                 new OAuth2AuthorizationServerConfigurer();
 
@@ -43,7 +46,10 @@ public class AuthorizationServerConfig {
                 .exceptionHandling((exceptions) -> exceptions
                         .defaultAuthenticationEntryPointFor(
                                 new LoginUrlAuthenticationEntryPoint("/login"),
-                                new MediaTypeRequestMatcher(MediaType.TEXT_HTML)));
+                                new MediaTypeRequestMatcher(MediaType.TEXT_HTML)))
+                // 必需：/userinfo 端点自身不解析 Bearer token，靠资源服务器过滤器
+                // 先完成认证。缺这一句该端点对任何合法 token 都返回拒绝
+                .oauth2ResourceServer((resourceServer) -> resourceServer.jwt(Customizer.withDefaults()));
 
         return http.build();
     }
@@ -56,7 +62,9 @@ public class AuthorizationServerConfig {
 
     @Bean
     public JWKSource<SecurityContext> jwkSource(UnifiedLoginProperties properties) {
-        RSAKey rsaKey = RsaKeyProvider.loadOrCreate(Path.of(properties.jwtKeyStore()));
+        String keyStore = Objects.requireNonNull(properties.jwtKeyStore(),
+                "unified-login.jwt-key-store 未配置");
+        RSAKey rsaKey = RsaKeyProvider.loadOrCreate(Path.of(keyStore));
         return new ImmutableJWKSet<>(new JWKSet(rsaKey));
     }
 
@@ -66,9 +74,11 @@ public class AuthorizationServerConfig {
     }
 
     @Bean
-    public AuthorizationServerSettings authorizationServerSettings() {
+    public AuthorizationServerSettings authorizationServerSettings(UnifiedLoginProperties properties) {
+        // issuer 必须来自配置（ISSUER_URL）：写死在代码里的话，部署到任何非本地
+        // 环境都会在 discovery 与 JWT 的 iss 里广播错误地址
         return AuthorizationServerSettings.builder()
-                .issuer("http://localhost:9000")
+                .issuer(Objects.requireNonNull(properties.issuer(), "unified-login.issuer 未配置"))
                 .build();
     }
 }
