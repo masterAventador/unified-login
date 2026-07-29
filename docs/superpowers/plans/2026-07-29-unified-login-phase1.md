@@ -1093,11 +1093,13 @@ public class UserService {
     /**
      * 并发注册同一邮箱撞唯一索引时，原样抛出 DataIntegrityViolationException——
      * 本层不掌握业务语义，由注册服务负责转译为领域异常。
+     * 用 saveAndFlush 而非 save：立即执行 INSERT，保证冲突异常在本方法调用点显现，
+     * 而不是延迟到外层事务提交时才冒出来（那时调用方的 catch 已经抓不住了）。
      */
     @Transactional
     public AppUser createUser(EmailAddress email, String passwordHash) {
         AppUser user = new AppUser(UUID.randomUUID(), email, passwordHash, Instant.now());
-        return repository.save(user);
+        return repository.saveAndFlush(user);
     }
 
     @Transactional(readOnly = true)
@@ -1138,7 +1140,9 @@ git commit -m "feat(user): 新增用户实体、仓储与用户服务
 - Create: `auth-server/src/main/java/com/aventador/unifiedlogin/web/RegistrationController.java`
 - Create: `auth-server/src/main/resources/templates/register.html`
 - Create: `auth-server/src/main/java/com/aventador/unifiedlogin/config/SecurityConfig.java`
+- Modify: `auth-server/src/main/java/com/aventador/unifiedlogin/user/UserService.java`（save 改 saveAndFlush，见 Step 3）
 - Test: `auth-server/src/test/java/com/aventador/unifiedlogin/registration/RegistrationServiceTest.java`
+- Test: `auth-server/src/test/java/com/aventador/unifiedlogin/registration/RegistrationServiceConcurrencyTest.java`
 - Test: `auth-server/src/test/java/com/aventador/unifiedlogin/web/RegistrationControllerTest.java`
 
 **Interfaces:**
@@ -1213,6 +1217,44 @@ class RegistrationServiceTest {
 }
 ```
 
+第二个测试文件 `auth-server/src/test/java/com/aventador/unifiedlogin/registration/RegistrationServiceConcurrencyTest.java`。
+两个并发注册同时穿过查重的竞态无法在真实数据库测试里稳定复现，这里用 mock 模拟
+`createUser` 抛唯一索引冲突，断言它被转译成业务异常而不是原样冒出（mock 仅用于
+制造竞态时序，断言落在真实的转译行为上）：
+
+```java
+package com.aventador.unifiedlogin.registration;
+
+import com.aventador.unifiedlogin.user.UserService;
+import org.junit.jupiter.api.Test;
+import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.security.crypto.password.PasswordEncoder;
+
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
+
+class RegistrationServiceConcurrencyTest {
+
+    @Test
+    void translatesUniqueIndexViolationIntoEmailAlreadyRegistered() {
+        UserService userService = mock(UserService.class);
+        PasswordEncoder passwordEncoder = mock(PasswordEncoder.class);
+        when(userService.emailExists(any())).thenReturn(false);
+        when(passwordEncoder.encode(anyString())).thenReturn("hash-value");
+        when(userService.createUser(any(), anyString()))
+                .thenThrow(new DataIntegrityViolationException("ux_app_user_email"));
+
+        RegistrationService service = new RegistrationService(userService, passwordEncoder);
+
+        assertThatThrownBy(() -> service.register("race@example.com", "a valid password"))
+                .isInstanceOf(EmailAlreadyRegisteredException.class);
+    }
+}
+```
+
 - [ ] **Step 2: 运行测试确认失败**
 
 Run: `cd auth-server && ./mvnw test -Dtest=RegistrationServiceTest`
@@ -1235,7 +1277,13 @@ public class EmailAlreadyRegisteredException extends RuntimeException {
 
 `auth-server/src/main/java/com/aventador/unifiedlogin/registration/RegistrationService.java`
 
-校验顺序为「邮箱格式 → 密码强度 → 邮箱查重」，保证密码不合规时不会产生任何写库动作：
+校验顺序为「邮箱格式 → 密码强度 → 邮箱查重」，保证密码不合规时不会产生任何写库动作。
+
+两个有意的设计点：**register 不加 @Transactional**——Argon2 哈希耗时且吃 19MB 内存，不应
+占着数据库连接与事务，唯一的写操作在 `UserService.createUser` 里自带事务；**catch
+DataIntegrityViolationException 转译**——并发注册穿过查重时由唯一索引兜底，冲突异常在
+掌握业务语义的这一层转译成「邮箱已被注册」，而不是以 500 冒给用户（Task 4 的 Javadoc
+契约在此兑现）：
 
 ```java
 package com.aventador.unifiedlogin.registration;
@@ -1244,12 +1292,14 @@ import com.aventador.unifiedlogin.password.PasswordPolicy;
 import com.aventador.unifiedlogin.user.AppUser;
 import com.aventador.unifiedlogin.user.EmailAddress;
 import com.aventador.unifiedlogin.user.UserService;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
 @Service
 public class RegistrationService {
+
+    private static final String EMAIL_TAKEN_MESSAGE = "该邮箱已被注册";
 
     private final UserService userService;
     private final PasswordEncoder passwordEncoder;
@@ -1259,29 +1309,37 @@ public class RegistrationService {
         this.passwordEncoder = passwordEncoder;
     }
 
-    @Transactional
     public AppUser register(String rawEmail, String rawPassword) {
         EmailAddress email = new EmailAddress(rawEmail);
         PasswordPolicy.validate(rawPassword);
 
         if (userService.emailExists(email)) {
-            throw new EmailAlreadyRegisteredException("该邮箱已被注册");
+            throw new EmailAlreadyRegisteredException(EMAIL_TAKEN_MESSAGE);
         }
 
-        return userService.createUser(email, passwordEncoder.encode(rawPassword));
+        try {
+            return userService.createUser(email, passwordEncoder.encode(rawPassword));
+        }
+        catch (DataIntegrityViolationException ex) {
+            // 并发注册同一邮箱穿过了上面的查重，唯一索引兜底后在此转译
+            throw new EmailAlreadyRegisteredException(EMAIL_TAKEN_MESSAGE);
+        }
     }
 
-    @Transactional(readOnly = true)
     public boolean isEmailTaken(String rawEmail) {
         return userService.emailExists(new EmailAddress(rawEmail));
     }
 }
 ```
 
+同时把 `UserService.createUser` 的 `repository.save(user)` 改为 `repository.saveAndFlush(user)`，
+并同步其 Javadoc（说明 saveAndFlush 保证冲突在调用点显现）——不立即 flush 时 INSERT 延迟到
+事务提交，冲突异常在 catch 块之外才抛出，上面的转译就永远抓不住。
+
 - [ ] **Step 4: 运行测试确认通过**
 
-Run: `cd auth-server && ./mvnw test -Dtest=RegistrationServiceTest`
-Expected: PASS，5 个测试全部通过
+Run: `cd auth-server && ./mvnw test -Dtest=RegistrationServiceTest,RegistrationServiceConcurrencyTest`
+Expected: PASS，6 个测试全部通过（5 个集成 + 1 个并发转译单元测试）
 
 - [ ] **Step 5: 写失败的控制器测试**
 
