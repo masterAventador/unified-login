@@ -187,8 +187,13 @@ Java 包名为 `com.aventador.unifiedlogin`。
 | --- | --- | --- |
 | Access Token（JWT） | 15 分钟 | 各产品后端本地验签使用。因无法单独撤销，故意做短 |
 | Refresh Token | 30 天 | 一次性使用 + 轮转 |
-| ID Token | 15 分钟（跟随 access token） | 仅用于登录完成时确认用户身份，禁止用于调用接口 |
-| 认证中心会话 Cookie | 14 天，滑动续期 | 仅种在 `auth` 子域。它有效即免登生效 |
+| ID Token | **30 分钟（框架硬编码，不可配置）** | 仅用于登录完成时确认用户身份，禁止用于调用接口 |
+| 认证中心会话 Cookie | 14 天**固定有效期**（非滑动续期，见下） | 仅种在 `auth` 子域。它有效即免登生效 |
+
+**关于会话 Cookie 的两点更正**（阶段一真实验收发现）：
+
+1. **必须显式配置 `server.servlet.session.cookie.max-age`**。只配 `server.servlet.session.timeout` 时，服务端会按 14 天回收空闲会话，但下发的 `Set-Cookie` **不带 `Max-Age` 也不带 `Expires`**，浏览器把它当会话 Cookie，用户一关浏览器 SSO 就归零。跨产品免登（§7.2）与桌面端复用系统浏览器会话（§7.4）都建立在这个 Cookie 存活的前提上，缺这一项等于核心价值主张只在"浏览器不关"时成立。
+2. **做不到滑动续期，改为固定有效期**。Tomcat 只在会话创建时下发 Cookie，此后不再重发，因此原生无法在每次访问时顺延过期时间。要实现滑动续期就得自己在过滤器里重发 Cookie，收益不足以支撑这份复杂度。当前实现是**自登录起固定 14 天**，到期后需重新登录。
 
 **Refresh token 轮转规则**：每次刷新作废旧 token 并签发新 token。同一个 refresh token 被使用第二次，判定为凭证泄漏，立即撤销该用户全部有效 token，强制重新登录。
 
@@ -200,7 +205,7 @@ Java 包名为 `com.aventador.unifiedlogin`。
 
 因此还需注册一对自定义 `AuthenticationConverter` + `AuthenticationProvider`，让公有客户端凭 `client_id` 通过刷新请求的客户端认证。**这不是降低安全等级**：公有客户端按定义就没有任何客户端凭证，授权码流程里 PKCE 证明的也是授权码与请求方的绑定关系，而非客户端身份。刷新请求的真正凭证是 refresh token 本身，其安全性由一次性轮转与重放检测保障。自定义 provider 必须做三项校验，任一不满足即返回 `invalid_client`：客户端存在、其认证方式包含 `NONE`、其授权类型包含 `refresh_token`。转换器与 provider 都必须严格限定只处理 `grant_type=refresh_token` 且不带 `client_secret` 的请求，绝不能抢走授权码流程的客户端认证——否则会绕过 `code_verifier` 校验。
 
-**关于 ID Token 寿命的框架约束**：Spring Authorization Server 的 `TokenSettings` 不提供 ID token 存活时间的配置项（只能配签名算法），ID token 的过期时间由 `accessTokenTimeToLive` 决定。因此它必然是 15 分钟，无法单独缩短。这在安全上可接受：ID token 只在登录完成的那一次交互中被前端读取一次，之后即被丢弃，实际暴露窗口远小于名义寿命；且它不被任何接口接受为凭证。
+**关于 ID Token 寿命的框架约束**：Spring Authorization Server 的 `TokenSettings` 不提供 ID token 存活时间的配置项（只能配签名算法）。**实测签发出来是 30 分钟**，且与 `accessTokenTimeToLive` 无关——`JwtGenerator` 把它硬编码成 `issuedAt.plus(30, ChronoUnit.MINUTES)`，框架源码里就带着 `// TODO Allow configuration for ID Token time-to-live` 的注释。因此**改 access token 寿命不会影响 ID token**，不要按这个思路去调它。无法单独缩短。这在安全上可接受：ID token 只在登录完成的那一次交互中被前端读取一次，之后即被丢弃，实际暴露窗口远小于名义寿命；且它不被任何接口接受为凭证。
 
 **会话 Cookie 属性**：`HttpOnly`、`Secure`、`SameSite=Lax`、`Domain` 不设置（即仅 `auth` 子域自身可用）。
 
@@ -262,6 +267,22 @@ MockMvc 不执行浏览器的同源策略。这也是为什么每个阶段都必
 3. 会话有效 → 直接回跳带 code；会话已过期 → **返回错误而非渲染登录页**（`prompt=none` 的语义保证）。
 4. 前端收到 code 则换取 token 继续；收到错误则跳转登录页。
 
+**⚠ 阶段二必须先做的两件事（阶段一真实验收实测发现，不做则本节整节无法实现）**：
+
+1. **`prompt=none` 当前被自家的过滤器截胡，框架那段逻辑是死代码**。授权服务器过滤链上配了
+   `.anyRequest().authenticated()`，而 `AuthorizationFilter` 排在 `OAuth2AuthorizationEndpointFilter`
+   **之前**，于是匿名的 `GET /oauth2/authorize?prompt=none` 在 `AuthorizationFilter` 就被拒，走
+   `LoginUrlAuthenticationEntryPoint` 跳 `/login`，授权端点根本没机会运行。实测：有会话时正常回跳带 code；
+   **无会话或会话失效时返回的是 302 跳 `/login`，而不是 `login_required`**。框架原生支持
+   `prompt=none`（`OAuth2AuthorizationCodeRequestAuthenticationProvider` 会抛 `login_required` 并按
+   RFC 6749 §4.1.2.1 回传到 redirect_uri），但在本配置下走不到。
+   **修法**：给授权端点单独装入口点，识别 `prompt=none` 并按 RFC 回传 `error=login_required`
+   到已校验的 redirect_uri。
+2. **认证中心默认 `X-Frame-Options: deny`，iframe 直接被浏览器拒绝渲染**。实测真实 Chrome 报
+   `Refused to display ... in a frame because it set 'X-Frame-Options' to 'deny'`。更麻烦的是父页面
+   因跨源读不到 iframe 的 location，**没有任何错误信号回到产品侧**——SDK 只能一直挂到自己超时。
+   需要为授权端点放开 frame 限制（仅该端点，不要全局放开），或改用其他续签方式。
+
 **该机制的前置约束**：静默续签依赖 iframe 中的请求能携带认证中心的会话 Cookie。这要求产品域与认证中心域属于同一 registrable domain（如 `a.example.com` 与 `auth.example.com`），此时浏览器视为 same-site，`SameSite=Lax` 的 Cookie 正常发送。**若未来某产品部署在完全不同的主域名下，静默续签将失效**，届时该产品需改用跳转式续签（整页跳 authorize 再跳回）。此约束必须在接入文档中写明。
 
 ### 7.4 桌面端（Tauri）登录
@@ -293,6 +314,15 @@ MockMvc 不执行浏览器的同源策略。这也是为什么每个阶段都必
 对外暴露：`login()`、`logout()`、`getAccessToken()`、`onAuthStateChange()`。内部封装 PKCE 生成与校验、`state` 校验、授权码换取、内存 token 管理、过期前自动刷新、`prompt=none` 静默续签。
 
 `getAccessToken()` 在 token 即将过期时自动刷新后返回，调用方无需感知刷新时机。
+
+**⚠ discovery 文档当前不能直接喂给标准 OIDC 库**（阶段一实测）。框架按自身能力宣告，与本系统实际启用的能力不符：
+
+- `grant_types_supported` 宣告了 `client_credentials` 与 token-exchange，而 §6.1 明确不启用这两项；
+- `token_endpoint_auth_methods_supported` 里**没有 `none`**，而本系统所有客户端都是 `ClientAuthenticationMethod.NONE`——文档等于在说"本服务器不支持公有客户端"，恰好说反。
+
+没有越权风险（未注册该授权类型的客户端仍会被拒），但任何按 discovery 自动选认证方式的标准库都会走进死胡同，直接抵消 §1「新产品接入成本趋近于零」的目标。**阶段二需要定制 discovery 输出使其与实际能力一致**；在此之前 SDK 不要依赖 discovery 自动配置。
+
+**⚠ SDK 不得给认证中心端点附加 `Authorization: Bearer` 头**。令牌端点带该头时 `BearerTokenAuthenticationFilter` 会覆盖客户端认证结果，换令牌与刷新都会以极具误导性的 `400 invalid_client` 失败。若 SDK 用统一 HTTP 封装自动附加 access token，必须对认证中心端点显式排除。
 
 ### 8.2 Python FastAPI 验签依赖（`sdk/python-fastapi`）
 
