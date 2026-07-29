@@ -23,3 +23,10 @@ spring:
   flyway:
     enabled: true
     locations: classpath:db/migration
+
+unified-login:
+  clients:
+    - client-id: demo-web-a
+      client-name: Demo Web A
+      redirect-uris:
+        - http://localhost:5173/callback
