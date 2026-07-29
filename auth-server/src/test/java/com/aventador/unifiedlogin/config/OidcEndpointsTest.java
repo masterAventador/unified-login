@@ -2,17 +2,13 @@ package com.aventador.unifiedlogin.config;
 
 import com.aventador.unifiedlogin.PostgresTestConfig;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.io.TempDir;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
-import org.springframework.test.context.DynamicPropertyRegistry;
-import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
 
-import java.nio.file.Path;
 import org.springframework.web.util.UriComponentsBuilder;
 
 import static org.hamcrest.Matchers.startsWith;
@@ -25,17 +21,6 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @AutoConfigureMockMvc
 @Import(PostgresTestConfig.class)
 class OidcEndpointsTest {
-
-    // 密钥文件指向临时目录：避免测试在项目目录里落下真实私钥，
-    // 也保证「生成」分支每次运行都被真实执行而非复用陈旧文件
-    @TempDir
-    static Path keyDir;
-
-    @DynamicPropertySource
-    static void isolatedKeyStore(DynamicPropertyRegistry registry) {
-        registry.add("unified-login.jwt-key-store",
-                () -> keyDir.resolve("jwt-signing-key.json").toString());
-    }
 
     @Autowired
     private MockMvc mockMvc;

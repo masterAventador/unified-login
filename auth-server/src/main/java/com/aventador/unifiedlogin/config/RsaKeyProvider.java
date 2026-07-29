@@ -61,8 +61,14 @@ public final class RsaKeyProvider {
             // 非 POSIX 文件系统（如 Windows NTFS）不支持该属性，退化为默认权限
             tmp = Files.createTempFile(keyFile.getParent(), keyFile.getFileName().toString(), ".tmp");
         }
-        Files.writeString(tmp, content, StandardCharsets.UTF_8);
-        Files.move(tmp, keyFile, StandardCopyOption.ATOMIC_MOVE);
+        try {
+            Files.writeString(tmp, content, StandardCharsets.UTF_8);
+            Files.move(tmp, keyFile, StandardCopyOption.ATOMIC_MOVE);
+        }
+        catch (IOException ex) {
+            Files.deleteIfExists(tmp);
+            throw ex;
+        }
     }
 
     private static RSAKey generate() {
