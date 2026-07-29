@@ -12,6 +12,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestBuilders.formLogin;
@@ -47,9 +48,14 @@ public final class OAuth2TestFlows {
 
     /** 标准的合法授权请求参数（可按需覆盖或删改某项来构造异常场景）。 */
     public static Map<String, String> validAuthorizeParams() {
+        return validAuthorizeParams(CLIENT_ID);
+    }
+
+    /** 同上，指定客户端。用于需要第二个客户端参与的场景。 */
+    public static Map<String, String> validAuthorizeParams(String clientId) {
         Map<String, String> params = new LinkedHashMap<>();
         params.put("response_type", "code");
-        params.put("client_id", CLIENT_ID);
+        params.put("client_id", clientId);
         params.put("redirect_uri", REDIRECT_URI);
         params.put("scope", "openid");
         params.put("code_challenge", CODE_CHALLENGE);
@@ -76,7 +82,13 @@ public final class OAuth2TestFlows {
 
     /** 以已登录会话走一次授权端点，返回回调地址中的一次性授权码。 */
     public static String authorizeAndExtractCode(MockMvc mockMvc, MockHttpSession session) throws Exception {
-        MvcResult result = mockMvc.perform(get(authorizeUri(validAuthorizeParams()))
+        return authorizeAndExtractCode(mockMvc, session, CLIENT_ID);
+    }
+
+    /** 同上，指定客户端。 */
+    public static String authorizeAndExtractCode(MockMvc mockMvc, MockHttpSession session, String clientId)
+            throws Exception {
+        MvcResult result = mockMvc.perform(get(authorizeUri(validAuthorizeParams(clientId)))
                         .session(session))
                 .andExpect(status().is3xxRedirection())
                 .andReturn();
@@ -89,9 +101,14 @@ public final class OAuth2TestFlows {
 
     /** 用授权码换取令牌，返回响应 JSON 原文。仅用于预期成功的场景。 */
     public static String exchangeCode(MockMvc mockMvc, String code) throws Exception {
+        return exchangeCode(mockMvc, code, CLIENT_ID);
+    }
+
+    /** 同上，指定客户端。 */
+    public static String exchangeCode(MockMvc mockMvc, String code, String clientId) throws Exception {
         return mockMvc.perform(post("/oauth2/token")
                         .param("grant_type", "authorization_code")
-                        .param("client_id", CLIENT_ID)
+                        .param("client_id", clientId)
                         .param("code", code)
                         .param("redirect_uri", REDIRECT_URI)
                         .param("code_verifier", CODE_VERIFIER))
@@ -116,9 +133,14 @@ public final class OAuth2TestFlows {
 
     /** 用 refresh token 换一组新令牌，返回响应 JSON 原文。 */
     public static String refreshTokens(MockMvc mockMvc, String refreshToken) throws Exception {
+        return refreshTokens(mockMvc, refreshToken, CLIENT_ID);
+    }
+
+    /** 同上，指定客户端。 */
+    public static String refreshTokens(MockMvc mockMvc, String refreshToken, String clientId) throws Exception {
         return mockMvc.perform(post("/oauth2/token")
                         .param("grant_type", "refresh_token")
-                        .param("client_id", CLIENT_ID)
+                        .param("client_id", clientId)
                         .param("refresh_token", refreshToken))
                 .andExpect(status().isOk())
                 .andReturn()
@@ -126,15 +148,27 @@ public final class OAuth2TestFlows {
                 .getContentAsString(StandardCharsets.UTF_8);
     }
 
-    private static String queryParam(String url, String name) {
+    /**
+     * 解析回调地址上的查询参数。
+     *
+     * <p>授权端点的参数错误同样是经由回调地址回传的（RFC 6749 §4.1.2.1），断言这类
+     * 响应时既要看回传了哪些参数，也要看**没有**回传哪些（比如授权码），因此需要拿到全集。
+     */
+    public static Map<String, String> queryParams(String url) {
         String query = URI.create(url).getQuery();
         assertThat(query).as("回调地址应带查询参数：%s", url).isNotNull();
 
         return Arrays.stream(query.split("&"))
                 .map((pair) -> pair.split("=", 2))
-                .filter((parts) -> parts.length == 2 && parts[0].equals(name))
-                .map((parts) -> parts[1])
-                .findFirst()
-                .orElseThrow(() -> new AssertionError("回调地址中没有 " + name + " 参数：" + url));
+                .filter((parts) -> parts.length == 2)
+                // 同名参数取第一个，与 queryParam 原有语义一致
+                .collect(Collectors.toMap((parts) -> parts[0], (parts) -> parts[1],
+                        (first, duplicate) -> first, LinkedHashMap::new));
+    }
+
+    private static String queryParam(String url, String name) {
+        String value = queryParams(url).get(name);
+        assertThat(value).as("回调地址中没有 %s 参数：%s", name, url).isNotNull();
+        return value;
     }
 }
