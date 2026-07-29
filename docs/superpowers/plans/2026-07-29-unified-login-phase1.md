@@ -3474,6 +3474,12 @@ git commit -m "feat(config): 令牌主体改为用户 ID 并附带邮箱
 - Consumes: 前九个 Task 的全部产出
 - Produces: 无新增生产代码。本任务是协议一致性的验收关卡——若测试不通过，说明前面某个环节配置有误，需回头修正而非放宽断言
 
+**Task 9 遗留的测试缺口，本任务补上**：Task 9 的自定义客户端认证 provider 有三项校验
+（客户端存在、认证方式含 `NONE`、授权类型含 `refresh_token`），但 Task 9 只测到了
+「客户端不存在」这一条——另外两条要构造「存在但不满足条件」的客户端才能覆盖，
+需要在测试配置里注册第二个客户端。本任务已有客户端相关的验收场景，一并补齐：
+注册一个不含 `refresh_token` 授权类型的测试客户端，断言它拿 refresh token 换发时被拒。
+
 - [ ] **Step 1: 写完整流程测试**
 
 `auth-server/src/test/java/com/aventador/unifiedlogin/config/AuthorizationCodeFlowTest.java`
