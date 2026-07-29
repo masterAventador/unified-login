@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>统一登录体系 · 设计总览</title>
+<style>
+  :root {
+    --bg-primary: #f5f5f7; --bg-secondary: #ffffff; --bg-tertiary: #e5e5e7;
+    --border: #d1d1d6; --text-primary: #1d1d1f; --text-secondary: #6e6e73; --text-tertiary: #aeaeb2;
+    --accent: #0071e3; --success: #34c759; --warning: #ff9f0a; --error: #ff3b30;
+    --selected-bg: #e8f4fd;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg-primary: #1d1d1f; --bg-secondary: #2d2d2f; --bg-tertiary: #3d3d3f;
+      --border: #424245; --text-primary: #f5f5f7; --text-secondary: #98989d; --text-tertiary: #636366;
+      --accent: #0a84ff; --selected-bg: rgba(10,132,255,0.15);
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg-primary); color: var(--text-primary); line-height: 1.5;
+         font-family: system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; }
+  .page { max-width: 1120px; margin: 0 auto; padding: 2.5rem 1.5rem 4rem; }
+  .doc-head { border-bottom: 1px solid var(--border); padding-bottom: 1.4rem; margin-bottom: 2rem; }
+  .doc-head h1 { margin: 0 0 0.35rem; font-size: 1.7rem; letter-spacing: -0.01em; }
+  .doc-head .meta { font-size: 0.8rem; color: var(--text-secondary); }
+  .toc { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 1.1rem; }
+  .toc a { font-size: 0.76rem; text-decoration: none; color: var(--text-secondary); background: var(--bg-secondary);
+           border: 1px solid var(--border); border-radius: 999px; padding: 0.28rem 0.75rem; }
+  .toc a:hover { color: var(--accent); border-color: var(--accent); }
+  section { margin-bottom: 2.6rem; scroll-margin-top: 1rem; }
+  section > h2 { font-size: 1.15rem; margin: 0 0 0.25rem; }
+  section > .subtitle { font-size: 0.83rem; color: var(--text-secondary); margin: 0 0 1rem; }
+  h3 { font-size: 0.92rem; margin: 0; }
+  code { background: var(--bg-tertiary); color: var(--text-primary); padding: 0.05rem 0.34rem;
+         border-radius: 4px; font-size: 0.79em; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+
+  .panel { background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+  .panel-pad { background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 12px; padding: 1rem 1.1rem; }
+  .panel-head { padding: 0.7rem 1rem; border-bottom: 1px solid var(--border); }
+  .panel-head h3 { margin: 0 0 0.15rem; }
+  .panel-head p { margin: 0; font-size: 0.73rem; color: var(--text-secondary); }
+  .label { font-size: 0.66rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-secondary);
+           font-weight: 600; margin-bottom: 0.7rem; }
+  .label-head { padding: 0.65rem 1rem; border-bottom: 1px solid var(--border); font-size: 0.66rem;
+                text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-secondary); font-weight: 600; }
+  .grid { display: grid; gap: 0.85rem; align-items: start; }
+  .g-2 { grid-template-columns: 1fr 1fr; }
+  .g-lean { grid-template-columns: 1.05fr 0.95fr; }
+  .g-wide { grid-template-columns: 1.25fr 0.75fr; }
+  .g-3 { grid-template-columns: repeat(3, 1fr); }
+  .g-4 { grid-template-columns: repeat(4, 1fr); }
+  @media (max-width: 860px) { .g-2, .g-lean, .g-wide, .g-3, .g-4 { grid-template-columns: 1fr; } }
+
+  .tier { background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 12px; padding: 1rem 1.1rem; }
+  .tier-core { border-color: var(--accent); border-width: 2px; }
+  .box { background: var(--bg-primary); border: 1px solid var(--border); border-radius: 9px; padding: 0.7rem 0.8rem; }
+  .box h4 { font-size: 0.85rem; margin: 0 0 0.35rem; }
+  .box .tag { font-size: 0.66rem; color: var(--text-secondary); display: block; margin-bottom: 0.4rem; }
+  .box ul { margin: 0; padding-left: 1rem; font-size: 0.74rem; color: var(--text-secondary); line-height: 1.65; }
+  .future { opacity: 0.55; border-style: dashed; }
+  .arrow { text-align: center; color: var(--text-tertiary); font-size: 1rem; margin: 0.45rem 0; }
+  .flowline { display: flex; align-items: center; gap: 0.6rem; padding: 0.2rem 0 0.2rem 0.2rem;
+              font-size: 0.78rem; color: var(--text-secondary); }
+  .flowline .num { flex-shrink: 0; width: 1.35rem; height: 1.35rem; border-radius: 50%; background: var(--accent);
+                   color: #fff; font-size: 0.7rem; display: flex; align-items: center; justify-content: center; font-weight: 600; }
+  .keynote { background: var(--selected-bg); border-left: 3px solid var(--accent); border-radius: 0 8px 8px 0;
+             padding: 0.75rem 0.95rem; font-size: 0.8rem; margin-top: 0.9rem; line-height: 1.65; }
+  .warnnote { background: var(--selected-bg); border-left: 3px solid var(--warning); border-radius: 0 8px 8px 0;
+              padding: 0.75rem 0.95rem; font-size: 0.8rem; margin-top: 0.9rem; line-height: 1.65; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 0.77rem; }
+  table th { text-align: left; font-size: 0.65rem; text-transform: uppercase; letter-spacing: 0.05em;
+             color: var(--text-secondary); font-weight: 600; padding: 0 0 0.42rem; border-bottom: 1px solid var(--border); }
+  table td { padding: 0.45rem 0.55rem 0.45rem 0; border-bottom: 1px solid var(--border); vertical-align: top; line-height: 1.5; }
+  table tr:last-child td { border-bottom: none; }
+  td.col { font-family: ui-monospace, Menlo, monospace; font-size: 0.75rem; white-space: nowrap; }
+  td.note { color: var(--text-secondary); }
+  .in-panel { padding: 0 1rem; }
+  .in-panel th { padding-top: 0.65rem; padding-left: 0; }
+  .pk, .uq { display: inline-block; font-size: 0.6rem; border-radius: 3px; padding: 0 0.28rem; margin-left: 0.3rem; vertical-align: middle; }
+  .pk { background: var(--accent); color: #fff; }
+  .uq { background: var(--warning); color: #1d1d1f; }
+
+  .tok { display: flex; gap: 0.7rem; padding: 0.65rem 0; border-bottom: 1px solid var(--border); }
+  .tok:last-child { border-bottom: none; }
+  .tok-life { flex-shrink: 0; width: 4.6rem; font-weight: 600; font-size: 0.82rem; color: var(--accent); }
+  .tok h4 { margin: 0 0 0.2rem; font-size: 0.82rem; }
+  .tok p { margin: 0; font-size: 0.75rem; color: var(--text-secondary); line-height: 1.55; }
+  .bar { height: 7px; border-radius: 4px; background: var(--bg-tertiary); overflow: hidden; margin-top: 0.45rem; }
+  .bar span { display: block; height: 100%; background: var(--accent); }
+
+  .flow { margin-bottom: 0.85rem; }
+  .flow-head { padding: 0.7rem 1rem; border-bottom: 1px solid var(--border); display: flex; align-items: baseline;
+               gap: 0.7rem; flex-wrap: wrap; }
+  .flow-head .ux { font-size: 0.73rem; color: var(--text-secondary); }
+  .badge { font-size: 0.62rem; text-transform: uppercase; letter-spacing: 0.05em; padding: 0.1rem 0.45rem;
+           border-radius: 4px; background: var(--bg-tertiary); color: var(--text-secondary); font-weight: 600; }
+  .badge.hot { background: var(--accent); color: #fff; }
+  .lanes { display: grid; }
+  .lanes-a { grid-template-columns: 4.6rem 1fr; }
+  .lanes-b { grid-template-columns: 5.6rem 1fr; }
+  .step { display: contents; }
+  .who { font-size: 0.63rem; text-transform: uppercase; letter-spacing: 0.04em; padding: 0.5rem 0.5rem 0.5rem 1rem;
+         border-bottom: 1px solid var(--border); font-weight: 600; color: var(--text-tertiary); }
+  .who.front, .who.rust { color: var(--accent); }
+  .who.auth { color: var(--warning); }
+  .who.br { color: var(--success); }
+  .what { font-size: 0.78rem; padding: 0.5rem 1rem 0.5rem 0.2rem; border-bottom: 1px solid var(--border);
+          color: var(--text-secondary); line-height: 1.5; }
+  .what b { color: var(--text-primary); font-weight: 600; }
+  .step:last-child .who, .step:last-child .what { border-bottom: none; }
+  .silent { background: var(--selected-bg); }
+
+  .side { padding: 0.85rem 1rem; }
+  .side h4 { font-size: 0.8rem; margin: 0 0 0.4rem; }
+  .side p { font-size: 0.76rem; color: var(--text-secondary); line-height: 1.6; margin: 0 0 0.85rem; }
+  .side p:last-child { margin-bottom: 0; }
+  .store { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+  .store span { font-size: 0.7rem; background: var(--bg-tertiary); border-radius: 5px; padding: 0.22rem 0.5rem; }
+  .vs { display: grid; grid-template-columns: 1fr 1fr; gap: 0.6rem; margin-top: 0.9rem; }
+  @media (max-width: 860px) { .vs { grid-template-columns: 1fr; } }
+  .vs > div { border-radius: 10px; padding: 0.8rem 0.9rem; font-size: 0.77rem; line-height: 1.55; }
+  .vs .good { background: rgba(52,199,89,0.10); border: 1px solid rgba(52,199,89,0.4); }
+  .vs .bad { background: rgba(255,59,48,0.08); border: 1px solid rgba(255,59,48,0.35); }
+  .vs h4 { margin: 0 0 0.35rem; font-size: 0.8rem; }
+  .vs ul { margin: 0.3rem 0 0; padding-left: 1.05rem; color: var(--text-secondary); }
+
+  .layer { padding: 0.7rem 1rem; border-bottom: 1px solid var(--border); }
+  .layer:last-child { border-bottom: none; }
+  .layer-top { display: flex; align-items: baseline; justify-content: space-between; gap: 0.6rem; margin-bottom: 0.25rem; }
+  .layer h4 { margin: 0; font-size: 0.85rem; }
+  .layer .tool { font-size: 0.67rem; color: var(--accent); font-family: ui-monospace, Menlo, monospace; }
+  .layer p { margin: 0; font-size: 0.76rem; color: var(--text-secondary); line-height: 1.55; }
+  .sev { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 0.4rem; vertical-align: middle; }
+  .sev.hi { background: var(--error); }
+  .sev.md { background: var(--warning); }
+  .demo { background: var(--bg-secondary); border: 2px solid var(--accent); border-radius: 12px;
+          padding: 0.9rem 1.1rem; margin-top: 0.9rem; }
+  .demo h3 { margin: 0 0 0.5rem; }
+  .demo > p { margin: 0; font-size: 0.79rem; color: var(--text-secondary); line-height: 1.6; }
+  .demo-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.6rem; margin-top: 0.7rem; }
+  @media (max-width: 860px) { .demo-row { grid-template-columns: 1fr; } }
+  .demo-row div { background: var(--bg-primary); border: 1px solid var(--border); border-radius: 8px;
+                  padding: 0.6rem 0.7rem; font-size: 0.75rem; }
+  .demo-row b { display: block; font-size: 0.78rem; margin-bottom: 0.2rem; }
+  .demo-row span { color: var(--text-secondary); line-height: 1.5; }
+  .phase td b { color: var(--text-primary); }
+</style>
+</head>
+<body>
+<div class="page">
+
+<div class="doc-head">
+  <h1>统一登录体系 · 设计总览</h1>
+  <div class="meta">2026-07-29 · Spring Boot 4.1 + Spring Authorization Server 7.1 + PostgreSQL · 配套规格书：<code>docs/superpowers/specs/2026-07-29-unified-login-design.md</code></div>
+  <div class="toc">
+    <a href="#s1">1 整体架构</a><a href="#s2">2 数据模型与 token</a><a href="#s3">3 浏览器端时序</a>
+    <a href="#s4">4 桌面端与移动端</a><a href="#s5">5 错误处理与测试</a><a href="#s6">6 实现阶段</a>
+  </div>
+</div>
+
+<section id="s1">
+  <h2>1 · 整体架构</h2>
+  <p class="subtitle">Spring Authorization Server 做 OIDC 提供方，各产品作为 client 接入。认证中心只回答「你是谁」，不回答「你能干什么」</p>
+
+  <div class="tier">
+    <div class="label">接入端 · 各个产品</div>
+    <div class="grid g-4">
+      <div class="box"><h4>Web 产品前端</h4><span class="tag">Vite + TS SPA</span><ul><li>授权码 + PKCE</li><li>token 存内存</li></ul></div>
+      <div class="box"><h4>桌面端</h4><span class="tag">Tauri 2.11</span><ul><li>系统浏览器登录</li><li>本地回环端口回调</li></ul></div>
+      <div class="box future"><h4>移动端</h4><span class="tag">未来</span><ul><li>系统浏览器 + App Links</li><li>同一套协议</li></ul></div>
+      <div class="box"><h4>管理后台</h4><span class="tag">Vite + TS SPA</span><ul><li>自己也是一个 client</li><li>登录走同一条路</li></ul></div>
+    </div>
+  </div>
+
+  <div class="arrow">▼</div>
+
+  <div class="tier tier-core">
+    <div class="label">auth.主域名 · 统一认证中心（Java 21 + Spring Boot 4.1 + Spring Authorization Server 7.1）</div>
+    <div class="grid g-4">
+      <div class="box"><h4>页面层</h4><span class="tag">Thymeleaf 服务端渲染</span><ul><li>登录页</li><li>注册页</li><li>修改密码页</li></ul></div>
+      <div class="box"><h4>OIDC 协议端点</h4><span class="tag">框架提供</span><ul><li>/oauth2/authorize</li><li>/oauth2/token</li><li>/oauth2/jwks</li><li>/userinfo · /logout</li></ul></div>
+      <div class="box"><h4>用户与凭证域</h4><span class="tag">自己写</span><ul><li>邮箱格式 + 全局唯一</li><li>Argon2id 密码哈希</li><li>账号启用/禁用状态</li></ul></div>
+      <div class="box"><h4>管理 API</h4><span class="tag">自己写</span><ul><li>用户列表 / 搜索</li><li>禁用 / 启用</li><li>重置密码</li></ul></div>
+    </div>
+  </div>
+
+  <div class="arrow">▼</div>
+
+  <div class="grid g-2">
+    <div class="tier">
+      <div class="label">存储</div>
+      <div class="box"><h4>PostgreSQL</h4><span class="tag">Flyway 管理表结构迁移</span>
+        <ul><li><code>app_user</code>：邮箱、密码哈希、状态</li><li>框架自带表：注册客户端、授权记录、授权同意</li></ul></div>
+    </div>
+    <div class="tier">
+      <div class="label">各产品后端 · 资源服务器</div>
+      <div class="box"><h4>Python FastAPI</h4><span class="tag">跨语言零成本</span>
+        <ul><li>启动时拉一次 JWKS 公钥并缓存</li><li>本地验签 JWT，<b>不需要回调认证中心</b></li><li>从 <code>sub</code> 拿全局用户 ID，权限自己判</li></ul></div>
+    </div>
+  </div>
+
+  <div style="margin-top:1rem">
+    <div class="flowline"><span class="num">1</span><span>产品前端把浏览器跳到 <code>auth.域名/oauth2/authorize</code>，带 client_id、redirect_uri、PKCE challenge</span></div>
+    <div class="flowline"><span class="num">2</span><span>认证中心没有会话 → 显示登录页；已有会话 → <b>直接回跳，这就是免登</b></span></div>
+    <div class="flowline"><span class="num">3</span><span>回调地址收到一次性 code，前端用 code + PKCE verifier 换 access / refresh / id token</span></div>
+    <div class="flowline"><span class="num">4</span><span>前端带 access token 调本产品的 Python 后端，后端用缓存的公钥本地验签</span></div>
+  </div>
+
+  <div class="keynote"><b>为什么第 2 步就是 SSO 的全部秘密：</b>会话 Cookie 种在 <code>auth.主域名</code> 自己身上，不是种在产品域上。在 A 产品登录时这个 Cookie 就有了；再去 B 产品，B 把浏览器跳到认证中心，认证中心一看 Cookie 还在，连页面都不渲染就直接回跳 —— 用户感知是「B 产品不用登录」。</div>
+</section>
+
+<section id="s2">
+  <h2>2 · 数据模型与 token 策略</h2>
+  <p class="subtitle">认证中心只存「你是谁」，不存任何产品的业务权限</p>
+
+  <div class="grid g-lean">
+    <div class="panel-pad">
+      <div class="label">自己写的唯一一张核心表 · app_user</div>
+      <table>
+        <tr><th>字段</th><th>说明</th></tr>
+        <tr><td class="col">id<span class="pk">PK</span></td><td class="note">UUID。就是各产品拿到的全局用户 ID（JWT 里的 <code>sub</code>），一旦生成永不变</td></tr>
+        <tr><td class="col">email<span class="uq">UNIQUE</span></td><td class="note">全小写存储，唯一索引建在小写值上，避免同一邮箱大小写注册成两个号</td></tr>
+        <tr><td class="col">password_hash</td><td class="note">Argon2id，OWASP 推荐参数</td></tr>
+        <tr><td class="col">status</td><td class="note">ACTIVE / DISABLED。禁用后既登不进也换不到新 token</td></tr>
+        <tr><td class="col">email_verified</td><td class="note">预留位，当前注册即写 true。以后接真发信只改逻辑不改表</td></tr>
+        <tr><td class="col">is_platform_admin</td><td class="note">管理后台准入标记，启动时按配置的邮箱列表置位</td></tr>
+        <tr><td class="col">password_changed_at</td><td class="note">改密时间戳。早于这个时间签发的 refresh token 全部作废</td></tr>
+        <tr><td class="col">created_at<br>updated_at</td><td class="note">审计用</td></tr>
+      </table>
+      <div class="label" style="margin-top:1.1rem">框架自带的三张表 · 不用自己设计</div>
+      <div style="font-size:0.77rem;color:var(--text-secondary);line-height:1.85">
+        <code>oauth2_registered_client</code> 各产品的 client 注册信息<br>
+        <code>oauth2_authorization</code> 授权码与已签发 token 记录，撤销靠它<br>
+        <code>oauth2_authorization_consent</code> 授权同意记录（自家产品全部跳过同意页）
+      </div>
+    </div>
+
+    <div class="panel-pad">
+      <div class="label">三种 token 的分工与寿命</div>
+      <div class="tok"><div class="tok-life">15 分钟</div><div>
+        <h4>Access Token（JWT）</h4>
+        <p>调各产品业务接口时带的那个。产品后端本地验签，不回调认证中心。故意做短 —— 它一旦泄漏无法单独撤销，只能等它过期</p>
+        <div class="bar"><span style="width:4%"></span></div></div></div>
+      <div class="tok"><div class="tok-life">30 天</div><div>
+        <h4>Refresh Token</h4>
+        <p><b>一次性 + 轮转</b>：每次刷新都作废旧的、发一个新的。同一个 refresh token 被用第二次 → 判定为泄漏，该用户所有 token 立即全部作废</p>
+        <div class="bar"><span style="width:100%"></span></div></div></div>
+      <div class="tok"><div class="tok-life">5 分钟</div><div>
+        <h4>ID Token</h4>
+        <p>只在登录完成那一刻用一次，告诉前端「登录的人是谁」。<b>绝不能拿它去调接口</b></p>
+        <div class="bar"><span style="width:2%"></span></div></div></div>
+      <div class="tok"><div class="tok-life">14 天</div><div>
+        <h4>认证中心会话 Cookie</h4>
+        <p>只种在 <code>auth</code> 子域，各产品拿不到也不需要。它活着 = 免登生效。滑动续期</p>
+        <div class="bar"><span style="width:47%"></span></div></div></div>
+    </div>
+  </div>
+
+  <div class="warnnote"><b>access token 15 分钟带来的一个真实后果：</b>在管理后台禁用一个用户，他不会立刻掉线，最长还能用 15 分钟。要做到「点了禁用立刻踢出」，唯一办法是产品后端每次请求都回调认证中心查状态 —— 那就丧失了本地验签的全部好处，认证中心一挂全线瘫痪。当前产品量级下接受这 15 分钟延迟。</div>
+</section>
+
+<section id="s3">
+  <h2>3 · 浏览器端的三种登录时序</h2>
+  <p class="subtitle">同一套授权码 + PKCE 流程，跑出三种完全不同的用户感受</p>
+
+  <div class="panel flow">
+    <div class="flow-head"><h3>场景一 · 第一次登录 A 产品</h3><span class="badge hot">唯一需要用户动手的一次</span>
+      <span class="ux">用户感受：跳到登录页，填邮箱密码，跳回来</span></div>
+    <div class="lanes lanes-a">
+      <div class="step"><div class="who front">前端</div><div class="what">生成随机 <code>code_verifier</code> 存起来，算出它的哈希 <code>code_challenge</code> 一起发出去 —— 这一步保证中途被截走的 code 换不到 token</div></div>
+      <div class="step"><div class="who front">前端</div><div class="what">整页跳转到 <code>auth.域名/oauth2/authorize?client_id=…&amp;code_challenge=…</code></div></div>
+      <div class="step"><div class="who auth">认证中心</div><div class="what">没有会话 Cookie → <b>渲染登录页</b></div></div>
+      <div class="step"><div class="who auth">认证中心</div><div class="what">用户提交邮箱密码 → Argon2id 校验 → 检查账号未被禁用 → <b>种下 14 天会话 Cookie</b>（只在 auth 子域）</div></div>
+      <div class="step"><div class="who auth">认证中心</div><div class="what">302 回跳 <code>a产品.域名/callback?code=一次性码</code></div></div>
+      <div class="step"><div class="who front">前端</div><div class="what">校验 state 后用 code + <code>code_verifier</code> 换 token，<b>三个 token 到手，全部只放内存</b></div></div>
+    </div>
+  </div>
+
+  <div class="panel flow">
+    <div class="flow-head"><h3>场景二 · 接着去 B 产品</h3><span class="badge hot">SSO 的兑现时刻</span>
+      <span class="ux">用户感受：点开就是登录状态，什么都没发生</span></div>
+    <div class="lanes lanes-a">
+      <div class="step silent"><div class="who front">B 前端</div><div class="what">同样跳 <code>/oauth2/authorize</code>，带的是 B 自己的 client_id</div></div>
+      <div class="step silent"><div class="who auth">认证中心</div><div class="what">会话 Cookie 还在且有效 → <b>登录页根本不渲染</b>，直接放行</div></div>
+      <div class="step silent"><div class="who auth">认证中心</div><div class="what">立刻 302 回跳 <code>b产品.域名/callback?code=…</code></div></div>
+      <div class="step silent"><div class="who front">B 前端</div><div class="what">换到 token，进入已登录界面。<b>全程约 200ms，用户只可能看到一次地址栏闪烁</b></div></div>
+    </div>
+  </div>
+
+  <div class="panel flow">
+    <div class="flow-head"><h3>场景三 · 用户按了 F5 刷新页面</h3><span class="badge">token 存内存的代价与解法</span>
+      <span class="ux">用户感受：和普通刷新没区别</span></div>
+    <div class="lanes lanes-a">
+      <div class="step"><div class="who front">前端</div><div class="what">内存里的 token 随页面一起没了</div></div>
+      <div class="step silent"><div class="who front">前端</div><div class="what">在隐藏 iframe 里静默请求 <code>/oauth2/authorize?prompt=none</code></div></div>
+      <div class="step silent"><div class="who auth">认证中心</div><div class="what">会话有效 → 直接回跳带 code；<b>会话已过期 → 返回错误而不是显示登录页</b>（这正是 prompt=none 的作用）</div></div>
+      <div class="step silent"><div class="who front">前端</div><div class="what">拿回 token，页面继续。若收到错误，才把用户送去登录页</div></div>
+    </div>
+  </div>
+
+  <div class="keynote"><b>为什么坚持 token 只放内存、不落 localStorage：</b>refresh token 有 30 天有效期，一旦被页面上任何一个第三方脚本或 XSS 偷走，等于账号被接管 30 天，而你无从察觉。放内存则页面一关就没了，代价仅仅是刷新页面时多一次 200ms 的静默握手 —— 而这次握手能成功，恰恰又是因为 SSO 会话本来就在。<b>SSO 让「不存 token」这个安全选择变得没有代价。</b></div>
+
+  <div class="warnnote"><b>静默续签的前置约束：</b>它依赖 iframe 里的请求能带上认证中心的会话 Cookie，这要求产品域与 <code>auth</code> 域属于同一主域名（浏览器视为 same-site）。若未来某个产品部署到完全不同的主域名下，静默续签会失效，该产品需改用整页跳转式续签。本地开发因为都在 localhost 不同端口，同样是 same-site，<b>无法复现这个问题</b>，需在预发环境验证。</div>
+</section>
+
+<section id="s4">
+  <h2>4 · 桌面端（Tauri）与移动端</h2>
+  <p class="subtitle">桌面端不自己画登录框 —— 这个反直觉的选择，恰恰是它能享受 SSO 的原因</p>
+
+  <div class="grid g-wide">
+    <div class="panel">
+      <div class="panel-head"><h3>Tauri 桌面端登录时序</h3>
+        <p>用户感受：点登录 → 浏览器弹出 → （可能已登录，直接完成）→ 回到 App 已是登录态</p></div>
+      <div class="lanes lanes-b">
+        <div class="step"><div class="who rust">Rust 侧</div><div class="what">在 <code>127.0.0.1</code> 上起一个<b>临时</b> HTTP 服务，端口随机，只为接这一次回调</div></div>
+        <div class="step"><div class="who rust">Rust 侧</div><div class="what">用<b>系统默认浏览器</b>打开 <code>auth.域名/oauth2/authorize?redirect_uri=http://127.0.0.1:随机端口/callback</code></div></div>
+        <div class="step silent"><div class="who br">系统浏览器</div><div class="what"><b>如果用户之前在浏览器里登录过任何一个 Web 产品 —— 会话 Cookie 就在这里</b>，认证中心直接放行，登录页都不显示</div></div>
+        <div class="step"><div class="who auth">认证中心</div><div class="what">否则渲染登录页，用户填一次邮箱密码</div></div>
+        <div class="step"><div class="who br">系统浏览器</div><div class="what">回跳到 <code>127.0.0.1:端口/callback?code=…</code>，页面显示「登录成功，可以关闭此页」</div></div>
+        <div class="step"><div class="who rust">Rust 侧</div><div class="what">校验 <code>state</code> 与预期一致 → 用 code + verifier 换 token → <b>立即关掉临时服务</b></div></div>
+        <div class="step"><div class="who rust">Rust 侧</div><div class="what">refresh token 写入<b>操作系统凭据库</b>，access token 只留内存</div></div>
+        <div class="step silent"><div class="who rust">下次启动</div><div class="what">从凭据库取回 refresh token 直接换 access token，<b>30 天内不用再登录</b></div></div>
+      </div>
+    </div>
+
+    <div>
+      <div class="panel">
+        <div class="side">
+          <h4>refresh token 存哪</h4>
+          <p>各系统的官方凭据库，不是明文文件、不是 localStorage：</p>
+          <div class="store"><span>macOS 钥匙串</span><span>Windows 凭据管理器</span><span>Linux Secret Service</span></div>
+          <p style="margin-top:0.85rem">这是桌面端相对 Web 端的<b>优势</b> —— 浏览器没有等价的安全存储，所以 Web 端才必须靠静默握手。</p>
+        </div>
+      </div>
+      <div class="panel" style="margin-top:0.85rem">
+        <div class="side">
+          <h4>移动端（未来）</h4>
+          <p>协议完全一样，只有回调方式不同：iOS 用 <code>ASWebAuthenticationSession</code>、Android 用 Custom Tabs，回调走 App Links 或自定义 scheme，凭据存 Keychain / Keystore。</p>
+          <p><b>一期不写代码，认证中心侧也不需要为它做任何改动</b> —— 到时只是配置里多一个 client。</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="vs">
+    <div class="good"><h4>✓ 用系统浏览器登录</h4>
+      <ul><li>和 Web 产品<b>共享会话，真正的全端 SSO</b></li><li>用户能看到 <code>auth.你的域名</code> 和锁标，钓不了鱼</li><li>浏览器已存的密码可自动填充</li><li>App 代码永远碰不到用户密码</li></ul></div>
+    <div class="bad"><h4>✗ 在 App 里内嵌 WebView 画登录框</h4>
+      <ul><li>WebView 的 Cookie 是独立的，<b>SSO 直接失效</b>，每个 App 都要单独登录</li><li>用户无法确认自己在给谁输密码</li><li>OAuth 官方规范明确不推荐</li><li>第三方登录提供方会直接拒绝</li></ul></div>
+  </div>
+</section>
+
+<section id="s5">
+  <h2>5 · 错误处理与测试策略</h2>
+  <p class="subtitle">登录系统的失败路径比成功路径重要 —— 成功只有一条，失败有十几条</p>
+
+  <div class="grid g-2">
+    <div class="panel">
+      <div class="label-head">测试分层</div>
+      <div class="layer"><div class="layer-top"><h4>单元测试</h4><span class="tool">JUnit 5 + Mockito</span></div>
+        <p>邮箱规范化与格式校验、Argon2id 哈希与验证、密码强度规则、账号状态流转。<b>先写失败的测试再写实现</b></p></div>
+      <div class="layer"><div class="layer-top"><h4>集成测试</h4><span class="tool">@SpringBootTest + Testcontainers</span></div>
+        <p>起真实 PostgreSQL 容器，覆盖注册接口、登录表单提交、改密、管理 API、以及完整的 authorize→token 换取</p></div>
+      <div class="layer"><div class="layer-top"><h4>协议一致性测试</h4><span class="tool">MockMvc</span></div>
+        <p>JWKS 端点返回的公钥能验开签发的 token；discovery 文档字段齐全；<b>refresh token 重放必须被拒</b>；回调白名单校验</p></div>
+      <div class="layer silent"><div class="layer-top"><h4>端到端测试</h4><span class="tool">Playwright</span></div>
+        <p>真实浏览器跑：注册 → 登录 demo-web-a → <b>打开 demo-web-b 验证免登</b> → 改密 → 验证 refresh 被拒 → 后台禁用 → 验证登不进。纳入仓库可重复执行</p></div>
+    </div>
+
+    <div class="panel">
+      <div class="label-head">必须显式处理的失败路径</div>
+      <table class="in-panel">
+        <tr><th>情况</th><th>行为</th></tr>
+        <tr><td><span class="sev hi"></span>邮箱已注册</td><td class="note">提示已存在，<b>不透露该邮箱是否活跃</b></td></tr>
+        <tr><td><span class="sev hi"></span>密码错误</td><td class="note">与「账号不存在」返回<b>相同</b>提示；不存在时也跑一次等价哈希运算对齐耗时</td></tr>
+        <tr><td><span class="sev hi"></span>连续登录失败</td><td class="note">同邮箱失败 5 次锁 15 分钟；同 IP 每分钟上限 20 次</td></tr>
+        <tr><td><span class="sev hi"></span>账号已被禁用</td><td class="note">登录直接拒绝；已持有的 refresh token 也换不到新 token</td></tr>
+        <tr><td><span class="sev hi"></span>refresh token 被重放</td><td class="note">判定泄漏，<b>该用户全部 token 立即作废</b></td></tr>
+        <tr><td><span class="sev hi"></span>回调地址不在白名单</td><td class="note">直接报错，<b>绝不回跳</b> —— 防开放重定向的命门</td></tr>
+        <tr><td><span class="sev md"></span>改密后的旧 token</td><td class="note">早于 password_changed_at 签发的 refresh token 全部失效</td></tr>
+        <tr><td><span class="sev md"></span>静默续签时会话过期</td><td class="note">prompt=none 返回错误而非登录页，前端据此跳转</td></tr>
+        <tr><td><span class="sev md"></span>桌面端回调 state 不符</td><td class="note">丢弃该 code，不换 token，提示重新登录</td></tr>
+        <tr><td><span class="sev md"></span>认证中心不可用</td><td class="note">已登录用户<b>不受影响</b>（本地验签），仅新登录和续期受阻</td></tr>
+      </table>
+    </div>
+  </div>
+
+  <div class="demo">
+    <h3>demo 接入方（不碰任何现有项目）</h3>
+    <p>SSO 的核心价值是「第二个产品免登」—— 只有一个接入方时，这件事在物理上无法被验证。demo 接入方存在的唯一目的，是让上面那条端到端用例真的能跑起来，并长期留在回归集里。</p>
+    <div class="demo-row">
+      <div><b>demo-web-a / demo-web-b</b><span>两个极简 Vite SPA，各自一个 client_id。存在的意义就是证明免登真的发生</span></div>
+      <div><b>demo-api</b><span>一个 FastAPI 服务，一个受保护接口，验证 Python 验签依赖真的能用</span></div>
+      <div><b>demo-desktop</b><span>最小 Tauri 壳，验证 loopback 回调与凭据库存储</span></div>
+    </div>
+  </div>
+</section>
+
+<section id="s6">
+  <h2>6 · 实现阶段划分</h2>
+  <p class="subtitle">每个阶段结束时都必须有一个能用真实用户操作验证的成果</p>
+  <div class="panel-pad">
+    <table class="phase">
+      <tr><th style="width:9rem">阶段</th><th>内容</th><th style="width:38%">阶段结束时可验证的事实</th></tr>
+      <tr><td><b>一 · 地基</b></td><td class="note">认证中心骨架、app_user 表与迁移、注册、登录页、授权码 + PKCE 流程、demo-web-a</td><td class="note">能在浏览器完成注册并登录 demo-web-a</td></tr>
+      <tr><td><b>二 · SSO 兑现</b></td><td class="note">Web TS 套件、静默续签、demo-web-b</td><td class="note"><b>登录 A 后打开 B 不出现登录页</b>，刷新页面保持登录</td></tr>
+      <tr><td><b>三 · 资源服务器</b></td><td class="note">Python FastAPI 验签依赖、demo-api</td><td class="note">带 token 访问受保护接口返回 200，不带返回 401</td></tr>
+      <tr><td><b>四 · 账号自服务与管理</b></td><td class="note">修改密码、管理 API、管理后台 SPA</td><td class="note">改密后旧 refresh token 被拒；后台禁用后无法登录</td></tr>
+      <tr><td><b>五 · 桌面端</b></td><td class="note">Tauri 套件（Rust 回环回调 + 凭据库）、demo-desktop</td><td class="note">桌面端完成登录，重启后仍是登录态</td></tr>
+    </table>
+    <div class="keynote" style="margin-top:1rem">阶段二是整个项目的价值验证点。若阶段二无法通过，后续阶段的意义都需重新评估。</div>
+  </div>
+</section>
+
+</div>
+</body>
+</html>

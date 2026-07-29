@@ -1,4 +1,7 @@
-.superpowers/
+.superpowers/*
+!.superpowers/brainstorm/
+.superpowers/brainstorm/*
+!.superpowers/brainstorm/design-overview.html
 target/
 node_modules/
 dist/
