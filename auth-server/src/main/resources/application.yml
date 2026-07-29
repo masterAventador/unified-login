@@ -2,12 +2,20 @@ server:
   port: 9000
   servlet:
     session:
+      # 服务端空闲回收期限。它只管服务端何时丢弃会话，不给浏览器端的 Cookie 任何存活期限
       timeout: 14d
       cookie:
         name: AUTH_SESSION
         http-only: true
         secure: true
         same-site: lax
+        # 必需：缺这一项时下发的是浏览器会话 Cookie（响应头里既无 Max-Age 也无 Expires），
+        # 用户一关浏览器免登就归零，规格书 §7.2 跨产品免登与 §7.4 桌面端复用系统浏览器
+        # 会话都建立在它之上。
+        # 与规格书 §6.3「14 天，滑动续期」的差异：Tomcat 只在**创建会话**时下发 Set-Cookie，
+        # 后续请求不会重新下发，因此原生做不到滑动续期。这里按固定 14 天有效期实现——
+        # 从登录那一刻起算满 14 天后需要重新登录，而不是「最后一次活跃后再算 14 天」。
+        max-age: 14d
 
 spring:
   application:

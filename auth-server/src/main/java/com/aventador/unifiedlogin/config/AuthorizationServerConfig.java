@@ -14,6 +14,7 @@ import org.springframework.security.config.Customizer;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.OAuth2AuthorizationServerConfiguration;
 import org.springframework.security.config.annotation.web.configurers.oauth2.server.authorization.OAuth2AuthorizationServerConfigurer;
+import org.springframework.security.core.userdetails.UserDetailsService;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.security.oauth2.server.authorization.OAuth2AuthorizationService;
 import org.springframework.security.oauth2.server.authorization.JdbcOAuth2AuthorizationService;
@@ -34,7 +35,9 @@ public class AuthorizationServerConfig {
     @Order(1)
     public SecurityFilterChain authorizationServerSecurityFilterChain(HttpSecurity http,
             RegisteredClientRepository registeredClientRepository,
-            AuthorizationServerSettings authorizationServerSettings) throws Exception {
+            AuthorizationServerSettings authorizationServerSettings,
+            OAuth2AuthorizationService authorizationService,
+            UserDetailsService userDetailsService) throws Exception {
         // Spring Security 7 中该类没有 authorizationServer() 静态工厂（那是旧 1.x 的 API），
         // 用无参构造——照旧文档写静态工厂会编译失败
         OAuth2AuthorizationServerConfigurer authorizationServerConfigurer =
@@ -50,6 +53,13 @@ public class AuthorizationServerConfig {
                                         authorizationServerSettings))
                                 .authenticationProvider(new PublicClientRefreshTokenAuthenticationProvider(
                                         registeredClientRepository)))
+                        // 账号被禁用或删除后，它手上的 refresh token 必须立刻失效（规格书 §10）。
+                        // 这里是**替换**掉框架的刷新 provider 而不是在它前面追加一个，原因见
+                        // AccountStatusRefreshTokenAuthenticationProvider 的类注释
+                        .tokenEndpoint((tokenEndpoint) -> tokenEndpoint
+                                .authenticationProviders((authenticationProviders) ->
+                                        AccountStatusRefreshTokenAuthenticationProvider.guardRefreshTokenProvider(
+                                                authenticationProviders, authorizationService, userDetailsService)))
                         .oidc(Customizer.withDefaults()))
                 .authorizeHttpRequests((authorize) -> authorize
                         .anyRequest().authenticated())

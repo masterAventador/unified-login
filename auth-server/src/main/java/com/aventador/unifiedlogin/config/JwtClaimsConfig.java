@@ -9,6 +9,9 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.security.crypto.keygen.Base64StringKeyGenerator;
 import org.springframework.security.crypto.keygen.StringKeyGenerator;
+import org.springframework.security.oauth2.core.OAuth2AuthenticationException;
+import org.springframework.security.oauth2.core.OAuth2Error;
+import org.springframework.security.oauth2.core.OAuth2ErrorCodes;
 import org.springframework.security.oauth2.core.OAuth2RefreshToken;
 import org.springframework.security.oauth2.core.OAuth2Token;
 import org.springframework.security.oauth2.core.oidc.endpoint.OidcParameterNames;
@@ -48,8 +51,13 @@ public class JwtClaimsConfig {
             // 快照，最长可在 refresh token 的 30 天寿命内被反复复用。因此这里的查找 key 是
             // 「登录时刻的邮箱」而非当前邮箱——将来实现「修改邮箱」功能时必须同步处理这里
             // （改完邮箱后旧 refresh token 会查不到人），否则表现为改邮箱即被强制登出。
+            //
+            // 查不到用户说明账号在授权码 / refresh token 仍有效的窗口内被删掉了，属于「授权已失效」
+            // 而不是服务端故障，必须抛 OAuth2AuthenticationException 让令牌端点回标准错误体——
+            // 抛其它异常会穿过整条认证链变成 500，接入方按规范解析 JSON 错误体时会直接失败。
             AppUser user = userService.findByEmail(new EmailAddress(context.getPrincipal().getName()))
-                    .orElseThrow(() -> new IllegalStateException("签发令牌时找不到对应用户"));
+                    .orElseThrow(() -> new OAuth2AuthenticationException(
+                            new OAuth2Error(OAuth2ErrorCodes.INVALID_GRANT, "签发令牌时找不到对应用户", null)));
 
             context.getClaims().subject(user.getId().toString());
             context.getClaims().claim("email", user.getEmail());

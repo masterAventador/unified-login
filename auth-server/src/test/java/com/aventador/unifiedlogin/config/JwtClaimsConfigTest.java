@@ -9,12 +9,14 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.test.web.servlet.MockMvc;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 @SpringBootTest
@@ -30,6 +32,9 @@ class JwtClaimsConfigTest {
 
     @Autowired
     private JwtDecoder jwtDecoder;
+
+    @Autowired
+    private JdbcTemplate jdbcTemplate;
 
     private static final String PASSWORD = "a valid password";
 
@@ -106,6 +111,35 @@ class JwtClaimsConfigTest {
                         .param("client_id", "no-such-client")
                         .param("refresh_token", refreshToken))
                 .andExpect(status().isUnauthorized());
+    }
+
+    /**
+     * 签发令牌时查不到用户，必须回标准 OAuth2 错误体而不是 500。
+     *
+     * <p>触发条件是账号在授权码 / refresh token 仍有效的窗口内被删除。接入方按规范解析令牌端点
+     * 的 JSON 错误体，收到 500 时拿到的是一个解析不了的错误页，只能表现为「登录卡住」。
+     * 断言落在响应形态上：状态码不是 5xx、body 是带 error 字段的 JSON、且没有任何令牌漏出去。
+     */
+    @Test
+    void tokenExchangeForDeletedUserReturnsOAuth2ErrorInsteadOfServerError() throws Exception {
+        String email = "claims-deleted@example.com";
+        registrationService.register(email, PASSWORD);
+        String code = OAuth2TestFlows.authorizeAndExtractCode(mockMvc,
+                OAuth2TestFlows.login(mockMvc, email, PASSWORD));
+
+        jdbcTemplate.update("DELETE FROM app_user WHERE email = ?", email);
+
+        mockMvc.perform(post("/oauth2/token")
+                        .param("grant_type", "authorization_code")
+                        .param("client_id", OAuth2TestFlows.CLIENT_ID)
+                        .param("code", code)
+                        .param("redirect_uri", OAuth2TestFlows.REDIRECT_URI)
+                        .param("code_verifier", OAuth2TestFlows.CODE_VERIFIER))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").isNotEmpty())
+                .andExpect(jsonPath("$.access_token").doesNotExist())
+                .andExpect(jsonPath("$.refresh_token").doesNotExist())
+                .andExpect(jsonPath("$.id_token").doesNotExist());
     }
 
     @Test
