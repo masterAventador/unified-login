@@ -65,6 +65,14 @@ public class JwtClaimsConfig {
      *
      * 注意：一旦自定义此 bean，框架不再自动装配 OAuth2TokenCustomizer，
      * 必须在这里手动 setJwtCustomizer，否则 sub/email 定制会静默失效。
+     *
+     * <p><b>有意未复现框架的 DefaultOAuth2TokenCustomizers</b>：框架默认还会装一个内部
+     * customizer，负责 mTLS 证书绑定的 {@code cnf.x5t#S256}、DPoP 的 {@code cnf.jkt}、
+     * 以及令牌交换的 {@code act} 三个声明。该类是框架包内可见，无法直接引用。本系统这三个
+     * 特性一个都没启用，故不复现。**启用其中任何一个之前必须回到这里补齐**——否则表现为
+     * 令牌照常签发、状态码照常 200，但发送方绑定静默失效，令牌退化为纯 bearer。
+     * 同理，若将来把某个客户端的令牌格式改成 opaque，需要给 OAuth2AccessTokenGenerator
+     * 装上对应的 OAuth2TokenCustomizer&lt;OAuth2TokenClaimsContext&gt;。
      */
     @Bean
     public OAuth2TokenGenerator<? extends OAuth2Token> tokenGenerator(

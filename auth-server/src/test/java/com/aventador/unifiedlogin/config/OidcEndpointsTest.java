@@ -1,6 +1,7 @@
 package com.aventador.unifiedlogin.config;
 
 import com.aventador.unifiedlogin.PostgresTestConfig;
+import com.aventador.unifiedlogin.support.OAuth2TestFlows;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
@@ -9,7 +10,6 @@ import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 
-import org.springframework.web.util.UriComponentsBuilder;
 
 import static org.hamcrest.Matchers.startsWith;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -70,18 +70,7 @@ class OidcEndpointsTest {
 
     @Test
     void authorizationEndpointRedirectsAnonymousUserToLogin() throws Exception {
-        // 参数必须写进 query string：框架用 request.getQueryString() 过滤授权参数，
-        // 而 MockMvc 的 .param() 不填充 queryString，参数会被整批丢弃报 invalid_request
-        String url = UriComponentsBuilder.fromPath("/oauth2/authorize")
-                .queryParam("response_type", "code")
-                .queryParam("client_id", "demo-web-a")
-                .queryParam("redirect_uri", "http://localhost:5173/callback")
-                .queryParam("scope", "openid")
-                .queryParam("code_challenge", "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM")
-                .queryParam("code_challenge_method", "S256")
-                .build().toString();
-
-        mockMvc.perform(get(url))
+        mockMvc.perform(get(OAuth2TestFlows.authorizeUri(OAuth2TestFlows.validAuthorizeParams())))
                 .andExpect(status().is3xxRedirection());
     }
 }

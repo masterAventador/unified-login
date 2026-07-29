@@ -1,12 +1,16 @@
 package com.aventador.unifiedlogin.config;
 
 import jakarta.servlet.http.HttpServletRequest;
+import org.springframework.http.HttpMethod;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.oauth2.core.AuthorizationGrantType;
 import org.springframework.security.oauth2.core.ClientAuthenticationMethod;
 import org.springframework.security.oauth2.core.endpoint.OAuth2ParameterNames;
 import org.springframework.security.oauth2.server.authorization.authentication.OAuth2ClientAuthenticationToken;
+import org.springframework.security.oauth2.server.authorization.settings.AuthorizationServerSettings;
 import org.springframework.security.web.authentication.AuthenticationConverter;
+import org.springframework.security.web.servlet.util.matcher.PathPatternRequestMatcher;
+import org.springframework.security.web.util.matcher.RequestMatcher;
 import org.springframework.util.StringUtils;
 
 import java.util.HashMap;
@@ -24,8 +28,23 @@ import java.util.Map;
  */
 final class PublicClientRefreshTokenAuthenticationConverter implements AuthenticationConverter {
 
+    private final RequestMatcher tokenEndpointMatcher;
+
+    PublicClientRefreshTokenAuthenticationConverter(AuthorizationServerSettings settings) {
+        this.tokenEndpointMatcher =
+                PathPatternRequestMatcher.pathPattern(HttpMethod.POST, settings.getTokenEndpoint());
+    }
+
     @Override
     public Authentication convert(HttpServletRequest request) {
+        // 必须先限定端点：客户端认证过滤器同时覆盖 token、introspect、revoke 等多个端点，
+        // 且自定义转换器被插在内置转换器最前面。不限定端点的话，任何人带上公开的 client_id
+        // 再加一个与内省毫无关系的 grant_type=refresh_token，就能通过 introspect 读出令牌里的
+        // sub 与 email，或通过 revoke 撤销他人令牌。
+        if (!tokenEndpointMatcher.matches(request)) {
+            return null;
+        }
+
         String grantType = request.getParameter(OAuth2ParameterNames.GRANT_TYPE);
         if (!AuthorizationGrantType.REFRESH_TOKEN.getValue().equals(grantType)) {
             return null;
