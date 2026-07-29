@@ -4,7 +4,6 @@ import com.aventador.unifiedlogin.PostgresTestConfig;
 import com.aventador.unifiedlogin.registration.RegistrationService;
 import com.aventador.unifiedlogin.support.OAuth2TestFlows;
 import com.aventador.unifiedlogin.user.AppUser;
-import com.aventador.unifiedlogin.user.UserService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
@@ -15,6 +14,8 @@ import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.test.web.servlet.MockMvc;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 @SpringBootTest
 @AutoConfigureMockMvc
@@ -76,33 +77,35 @@ class JwtClaimsConfigTest {
         String initialTokenResponse = OAuth2TestFlows.exchangeCode(mockMvc, code);
 
         String initialAccessToken = OAuth2TestFlows.jsonField(initialTokenResponse, "access_token");
+        String refreshToken = OAuth2TestFlows.jsonField(initialTokenResponse, "refresh_token");
 
-        // 尝试获取 refresh_token（如果响应中有）
-        String refreshToken = null;
-        try {
-            refreshToken = OAuth2TestFlows.jsonField(initialTokenResponse, "refresh_token");
-        } catch (AssertionError e) {
-            // 如果响应中没有 refresh_token，跳过真实刷新流程，
-            // 但仍验证初始 token 的声明正确性（这代表 customizer 在签发时工作正常）
-        }
+        String refreshedTokenResponse = OAuth2TestFlows.refreshTokens(mockMvc, refreshToken);
+        String refreshedAccessToken = OAuth2TestFlows.jsonField(refreshedTokenResponse, "access_token");
 
-        Jwt initialJwt = jwtDecoder.decode(initialAccessToken);
-        assertThat(initialJwt.getSubject()).isEqualTo(user.getId().toString());
-        assertThat(initialJwt.getClaimAsString("email")).isEqualTo(email);
+        // 必须确认换到的是新令牌，否则下面的断言可能只是把旧响应又验了一遍
+        assertThat(refreshedAccessToken).isNotEqualTo(initialAccessToken);
 
-        if (refreshToken != null) {
-            // 调用刷新令牌端点获取新令牌
-            String refreshedTokenResponse = OAuth2TestFlows.refreshTokens(mockMvc, refreshToken);
-            String refreshedAccessToken = OAuth2TestFlows.jsonField(refreshedTokenResponse, "access_token");
+        Jwt refreshedJwt = jwtDecoder.decode(refreshedAccessToken);
+        assertThat(refreshedJwt.getSubject()).isEqualTo(user.getId().toString());
+        assertThat(refreshedJwt.getClaimAsString("email")).isEqualTo(email);
+    }
 
-            // 验证获得了新的令牌，而不是重复了旧响应
-            assertThat(refreshedAccessToken).isNotEqualTo(initialAccessToken);
+    @Test
+    void refreshWithUnknownClientIsRejected() throws Exception {
+        // 守住自定义客户端认证路径仍然校验客户端：若哪天校验被删，这条必须立刻变红
+        String email = "claims-refresh-badclient@example.com";
+        registrationService.register(email, PASSWORD);
 
-            // 验证刷新后的 access token 的 sub 和 email 仍然正确
-            Jwt refreshedJwt = jwtDecoder.decode(refreshedAccessToken);
-            assertThat(refreshedJwt.getSubject()).isEqualTo(user.getId().toString());
-            assertThat(refreshedJwt.getClaimAsString("email")).isEqualTo(email);
-        }
+        String code = OAuth2TestFlows.authorizeAndExtractCode(mockMvc,
+                OAuth2TestFlows.login(mockMvc, email, PASSWORD));
+        String refreshToken = OAuth2TestFlows.jsonField(
+                OAuth2TestFlows.exchangeCode(mockMvc, code), "refresh_token");
+
+        mockMvc.perform(post("/oauth2/token")
+                        .param("grant_type", "refresh_token")
+                        .param("client_id", "no-such-client")
+                        .param("refresh_token", refreshToken))
+                .andExpect(status().isUnauthorized());
     }
 
     @Test

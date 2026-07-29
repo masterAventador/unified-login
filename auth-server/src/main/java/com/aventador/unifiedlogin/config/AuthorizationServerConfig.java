@@ -31,7 +31,8 @@ public class AuthorizationServerConfig {
 
     @Bean
     @Order(1)
-    public SecurityFilterChain authorizationServerSecurityFilterChain(HttpSecurity http) throws Exception {
+    public SecurityFilterChain authorizationServerSecurityFilterChain(HttpSecurity http,
+            RegisteredClientRepository registeredClientRepository) throws Exception {
         // Spring Security 7 中该类没有 authorizationServer() 静态工厂（那是旧 1.x 的 API），
         // 用无参构造——照旧文档写静态工厂会编译失败
         OAuth2AuthorizationServerConfigurer authorizationServerConfigurer =
@@ -39,8 +40,14 @@ public class AuthorizationServerConfig {
 
         http
                 .securityMatcher(authorizationServerConfigurer.getEndpointsMatcher())
-                .with(authorizationServerConfigurer, (authorizationServer) ->
-                        authorizationServer.oidc(Customizer.withDefaults()))
+                // 公有客户端的刷新请求过不了框架内置的客户端认证（内置转换器都要求
+                // code_verifier 或密钥），必须补一条自己的认证路径，见规格书 §6.3
+                .with(authorizationServerConfigurer, (authorizationServer) -> authorizationServer
+                        .clientAuthentication((clientAuthentication) -> clientAuthentication
+                                .authenticationConverter(new PublicClientRefreshTokenAuthenticationConverter())
+                                .authenticationProvider(new PublicClientRefreshTokenAuthenticationProvider(
+                                        registeredClientRepository)))
+                        .oidc(Customizer.withDefaults()))
                 .authorizeHttpRequests((authorize) -> authorize
                         .anyRequest().authenticated())
                 .exceptionHandling((exceptions) -> exceptions

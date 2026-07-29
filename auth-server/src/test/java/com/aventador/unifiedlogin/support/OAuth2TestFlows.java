@@ -3,24 +3,15 @@ package com.aventador.unifiedlogin.support;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 import org.springframework.mock.web.MockHttpSession;
-import org.springframework.security.oauth2.core.AuthorizationGrantType;
-import org.springframework.security.oauth2.core.ClientAuthenticationMethod;
-import org.springframework.security.oauth2.core.oidc.OidcScopes;
-import org.springframework.security.oauth2.server.authorization.client.RegisteredClient;
-import org.springframework.security.oauth2.server.authorization.client.RegisteredClientRepository;
-import org.springframework.security.oauth2.server.authorization.settings.ClientSettings;
-import org.springframework.security.oauth2.server.authorization.settings.TokenSettings;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.web.util.UriComponentsBuilder;
 
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
-import java.time.Duration;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.Map;
-import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestBuilders.formLogin;
@@ -111,16 +102,16 @@ public final class OAuth2TestFlows {
     }
 
     /**
-     * 从令牌响应中取出某个字段的值。用 Jackson 解析 JSON。
+     * 从令牌响应中取出某个字段的值。用 Jackson 而非字符串查找：
+     * 后者只能取带引号的字符串字段，遇到数字/布尔字段会误报「字段不存在」，
+     * 把后续任务的排查方向带偏。
      */
+    // Jackson 3 的异常全部是非受检的，这里不需要（也不应该）包 try/catch：
+    // JSON 解析不了时让原始异常直接抛出，比包装成 AssertionError 更好排查
     public static String jsonField(String json, String field) {
-        try {
-            JsonNode node = OBJECT_MAPPER.readTree(json).get(field);
-            assertThat(node).as("响应中应包含字段 %s", field).isNotNull();
-            return node.asText();
-        } catch (Exception e) {
-            throw new AssertionError("响应不是合法 JSON: " + json, e);
-        }
+        JsonNode node = OBJECT_MAPPER.readTree(json).path(field);
+        assertThat(node.isMissingNode()).as("响应中应包含字段 %s", field).isFalse();
+        return node.asText();
     }
 
     /** 用 refresh token 换一组新令牌，返回响应 JSON 原文。 */
