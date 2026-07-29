@@ -4114,7 +4114,9 @@ Expected: FAIL — 限流尚未接入过滤链，连续失败后第 6 次仍按�
 package com.aventador.unifiedlogin.security;
 
 import org.springframework.context.event.EventListener;
-import org.springframework.security.authentication.event.AuthenticationFailureBadCredentialsEvent;
+import org.springframework.security.authentication.event.AbstractAuthenticationFailureEvent;
+import org.springframework.security.authentication.event.AuthenticationFailureProviderNotFoundEvent;
+import org.springframework.security.authentication.event.AuthenticationFailureServiceExceptionEvent;
 import org.springframework.security.authentication.event.AuthenticationSuccessEvent;
 import org.springframework.stereotype.Component;
 
@@ -4128,12 +4130,23 @@ public class LoginAttemptEventListener {
     }
 
     /**
-     * 账号不存在时 DaoAuthenticationProvider 会把 UsernameNotFoundException 转成
-     * BadCredentialsException（默认 hideUserNotFoundExceptions=true），因此这里
-     * 天然对不存在的邮箱也会计数，正是防枚举所需要的。
+     * ⚠ 必须订阅 AbstractAuthenticationFailureEvent，**不能只订阅
+     * AuthenticationFailureBadCredentialsEvent**。禁用账号抛的是 DisabledException，
+     * 对应 AuthenticationFailureDisabledEvent；只订阅 BadCredentials 的话禁用账号永不被锁，
+     * 攻击者连敲六次即可据「锁没锁」识别出「账号存在但已禁用」，这是账号状态预言机。
+     *
+     * <p>账号不存在时 DaoAuthenticationProvider 会把 UsernameNotFoundException 转成
+     * BadCredentialsException（默认 hideUserNotFoundExceptions=true），因此不存在的邮箱
+     * 天然也会计数。
+     *
+     * <p>基础设施类失败不计数：数据库故障会让所有登录失败，若计数则正常用户被批量锁死。
      */
     @EventListener
-    public void onFailure(AuthenticationFailureBadCredentialsEvent event) {
+    public void onFailure(AbstractAuthenticationFailureEvent event) {
+        if (event instanceof AuthenticationFailureServiceExceptionEvent
+                || event instanceof AuthenticationFailureProviderNotFoundEvent) {
+            return;
+        }
         loginAttemptService.recordFailure(event.getAuthentication().getName());
     }
 
