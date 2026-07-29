@@ -21,6 +21,11 @@
   - `org.springframework.security.config.annotation.web.configurers.oauth2.server.authorization.OAuth2AuthorizationServerConfigurer`
   - `org.springframework.security.config.annotation.web.configuration.OAuth2AuthorizationServerConfiguration`
   - 其余类（`RegisteredClient`、`AuthorizationServerSettings`、`JdbcRegisteredClientRepository`、`JdbcOAuth2AuthorizationService`）包路径**未变**，仍在 `org.springframework.security.oauth2.server.authorization.*` 下。
+- **⚠ 测试注解同样被 Boot 4.x 模块化拆分**：`@AutoConfigureMockMvc` 不在旧包
+  `org.springframework.boot.test.autoconfigure.web.servlet`（该包在 4.1 的
+  spring-boot-test-autoconfigure 里已不存在），现位于
+  `org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc`，
+  需要 test 依赖 `spring-boot-starter-webmvc-test`（Task 5 起已加入 pom）。
 - **⚠ Testcontainers 2.x 坐标与包路径均已更名**：artifactId 必须带 `testcontainers-` 前缀（`testcontainers-postgresql`、`testcontainers-junit-jupiter`），容器类在 `org.testcontainers.postgresql.PostgreSQLContainer` 且**不再是泛型类**（不要写 `<?>`）。
 - **⚠ BouncyCastle 必须显式声明版本**：Spring Boot 4.1 不管理它，而 `Argon2PasswordEncoder` 运行时依赖它。使用 `org.bouncycastle:bcprov-jdk18on:1.85`。
 - **Java 包名**：`com.aventador.unifiedlogin`。
@@ -185,6 +190,13 @@ distributionUrl=https://repo.maven.apache.org/maven2/org/apache/maven/apache-mav
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!-- 必需：Boot 4.x 把 MockMvc 测试自动配置拆到独立模块，
+             @AutoConfigureMockMvc 现位于 org.springframework.boot.webmvc.test.autoconfigure -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-webmvc-test</artifactId>
             <scope>test</scope>
         </dependency>
         <dependency>
@@ -1352,7 +1364,7 @@ import com.aventador.unifiedlogin.PostgresTestConfig;
 import com.aventador.unifiedlogin.registration.RegistrationService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.test.web.servlet.MockMvc;
@@ -1743,7 +1755,7 @@ import com.aventador.unifiedlogin.PostgresTestConfig;
 import com.aventador.unifiedlogin.registration.RegistrationService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.test.web.servlet.MockMvc;
@@ -2366,7 +2378,7 @@ package com.aventador.unifiedlogin.config;
 import com.aventador.unifiedlogin.PostgresTestConfig;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.test.web.servlet.MockMvc;
@@ -2723,7 +2735,7 @@ import com.aventador.unifiedlogin.support.OAuth2TestFlows;
 import com.aventador.unifiedlogin.user.AppUser;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.security.oauth2.jwt.Jwt;
@@ -2898,7 +2910,7 @@ import com.aventador.unifiedlogin.registration.RegistrationService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.test.web.servlet.MockMvc;
@@ -3348,7 +3360,7 @@ import com.aventador.unifiedlogin.registration.RegistrationService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.test.web.servlet.MockMvc;
