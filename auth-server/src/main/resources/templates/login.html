@@ -10,6 +10,7 @@
     <h1>登录</h1>
 
     <p th:if="${param.error}" data-testid="login-error">邮箱或密码不正确</p>
+    <p th:if="${param.locked}" data-testid="login-locked">尝试次数过多，请在 15 分钟后再试</p>
     <p th:if="${param.registered}" data-testid="login-registered">注册成功，请登录</p>
 
     <form method="post" th:action="@{/login}">

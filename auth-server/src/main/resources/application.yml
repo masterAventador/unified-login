@@ -27,6 +27,10 @@ spring:
 unified-login:
   issuer: ${ISSUER_URL:http://localhost:9000}
   jwt-key-store: ${JWT_KEY_STORE:./data/jwt-signing-key.json}
+  login-rate-limit:
+    max-failures-per-email: 5
+    email-lock-duration: 15m
+    max-attempts-per-ip-per-minute: 20
   clients:
     - client-id: demo-web-a
       client-name: Demo Web A

@@ -1,0 +1,4 @@
+# 登录限流计数是进程内单例且被所有 @SpringBootTest 共用的上下文持有，
+# 注册成默认监听器以保证每个测试方法都从零开始，避免计数跨测试类累加。
+org.springframework.test.context.TestExecutionListener = \
+  com.aventador.unifiedlogin.support.LoginAttemptResetTestExecutionListener
