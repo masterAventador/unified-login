@@ -13,6 +13,7 @@ import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
 
 import java.nio.file.Path;
+import org.springframework.web.util.UriComponentsBuilder;
 
 import static org.hamcrest.Matchers.startsWith;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -84,13 +85,18 @@ class OidcEndpointsTest {
 
     @Test
     void authorizationEndpointRedirectsAnonymousUserToLogin() throws Exception {
-        mockMvc.perform(get("/oauth2/authorize")
-                        .param("response_type", "code")
-                        .param("client_id", "demo-web-a")
-                        .param("redirect_uri", "http://localhost:5173/callback")
-                        .param("scope", "openid")
-                        .param("code_challenge", "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM")
-                        .param("code_challenge_method", "S256"))
+        // 参数必须写进 query string：框架用 request.getQueryString() 过滤授权参数，
+        // 而 MockMvc 的 .param() 不填充 queryString，参数会被整批丢弃报 invalid_request
+        String url = UriComponentsBuilder.fromPath("/oauth2/authorize")
+                .queryParam("response_type", "code")
+                .queryParam("client_id", "demo-web-a")
+                .queryParam("redirect_uri", "http://localhost:5173/callback")
+                .queryParam("scope", "openid")
+                .queryParam("code_challenge", "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM")
+                .queryParam("code_challenge_method", "S256")
+                .build().toString();
+
+        mockMvc.perform(get(url))
                 .andExpect(status().is3xxRedirection());
     }
 }
