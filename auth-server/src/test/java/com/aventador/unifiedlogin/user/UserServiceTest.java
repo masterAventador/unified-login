@@ -6,7 +6,9 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
 
+import java.time.Instant;
 import java.util.Optional;
+import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -59,5 +61,17 @@ class UserServiceTest {
     @Test
     void returnsEmptyForUnknownEmail() {
         assertThat(userService.findByEmail(new EmailAddress("unknown@example.com"))).isEmpty();
+    }
+
+    @Test
+    void brandNewEntityReportsIsNewUntilPersisted() {
+        // Persistable 契约：新实体 save 前 isNew=true（使 save 走 persist 而非 merge），持久化后翻转
+        AppUser user = new AppUser(UUID.randomUUID(), new EmailAddress("persistable@example.com"),
+                "hash-value", Instant.now());
+        assertThat(user.isNew()).isTrue();
+
+        repository.save(user);
+
+        assertThat(user.isNew()).isFalse();
     }
 }

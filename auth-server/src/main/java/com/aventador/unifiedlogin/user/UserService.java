@@ -16,9 +16,13 @@ public class UserService {
         this.repository = repository;
     }
 
+    /**
+     * 并发注册同一邮箱撞唯一索引时，原样抛出 DataIntegrityViolationException——
+     * 本层不掌握业务语义，由注册服务负责转译为领域异常。
+     */
     @Transactional
     public AppUser createUser(EmailAddress email, String passwordHash) {
-        AppUser user = new AppUser(UUID.randomUUID(), email.value(), passwordHash, Instant.now());
+        AppUser user = new AppUser(UUID.randomUUID(), email, passwordHash, Instant.now());
         return repository.save(user);
     }
 
