@@ -35,7 +35,8 @@
 ### 阶段一的已知限制（不在本阶段解决，不要视为缺陷）
 
 - **会话存储在应用内存中**，认证中心重启会导致所有用户需重新登录。持久化会话留待后续阶段。
-- 登录失败限流、修改密码、管理后台、静默续签均不在本阶段范围内。
+- 修改密码、管理后台、静默续签不在本阶段范围内。
+- 登录失败限流的计数状态同样保存在应用内存中，仅适用于单实例部署。多实例部署需改用共享存储，届时再处理。
 
 ## File Structure
 
@@ -154,6 +155,17 @@ e2e/                                            Playwright 端到端用例
         <dependency>
             <groupId>org.flywaydb</groupId>
             <artifactId>flyway-database-postgresql</artifactId>
+        </dependency>
+        <!-- 必需：Spring Boot 4.x 把 FlywayAutoConfiguration 拆成了独立模块。
+             缺少它时自动配置会被静默跳过——不报错，但迁移永远不执行 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-flyway</artifactId>
+        </dependency>
+        <!-- 登录失败限流的带过期计数（Task 11）。groupId 带连字符、包名不带 -->
+        <dependency>
+            <groupId>com.github.ben-manes.caffeine</groupId>
+            <artifactId>caffeine</artifactId>
         </dependency>
         <dependency>
             <groupId>org.postgresql</groupId>
@@ -393,7 +405,7 @@ Flyway，用 Testcontainers 验证表结构与邮箱唯一索引。"
 
 **Interfaces:**
 - Consumes: 无
-- Produces: `EmailAddress`（record，构造器即校验；`value()` 返回规范化后的小写邮箱）、`EmailAddress.MAX_LENGTH`、`InvalidEmailException`
+- Produces: `EmailAddress`（record，构造器即校验；`value()` 返回规范化后的小写邮箱）、`EmailAddress.MAX_LENGTH`、`EmailAddress.normalize(String): String`（只规范化不校验，Task 11 的限流会用它）、`InvalidEmailException`
 
 - [ ] **Step 1: 写失败的测试**
 
@@ -460,6 +472,18 @@ class EmailAddressTest {
     void acceptsPlusAddressing() {
         assertThat(new EmailAddress("user+tag@example.com").value()).isEqualTo("user+tag@example.com");
     }
+
+    @Test
+    void normalizeLowercasesAndTrimsWithoutValidating() {
+        // 供登录限流等场景使用：对非法格式的输入也要能得到稳定的归一化键
+        assertThat(EmailAddress.normalize("  User@Example.COM ")).isEqualTo("user@example.com");
+        assertThat(EmailAddress.normalize("not-an-email")).isEqualTo("not-an-email");
+    }
+
+    @Test
+    void normalizeTreatsNullAsEmptyString() {
+        assertThat(EmailAddress.normalize(null)).isEmpty();
+    }
 }
 ```
 
@@ -505,7 +529,7 @@ public record EmailAddress(String value) {
         if (value == null) {
             throw new InvalidEmailException("邮箱不能为空");
         }
-        value = value.trim().toLowerCase(Locale.ROOT);
+        value = normalize(value);
         if (value.isEmpty()) {
             throw new InvalidEmailException("邮箱不能为空");
         }
@@ -516,13 +540,22 @@ public record EmailAddress(String value) {
             throw new InvalidEmailException("邮箱格式不正确");
         }
     }
+
+    /**
+     * 只做规范化，不做任何校验。用于必须对非法输入也一致处理的场景——
+     * 例如登录失败限流，对不存在或格式错误的邮箱同样要计数，否则「会不会被锁」
+     * 本身就泄漏了账号是否存在。
+     */
+    public static String normalize(String raw) {
+        return (raw == null) ? "" : raw.trim().toLowerCase(Locale.ROOT);
+    }
 }
 ```
 
 - [ ] **Step 5: 运行测试确认通过**
 
 Run: `cd auth-server && ./mvnw test -Dtest=EmailAddressTest`
-Expected: PASS，10 个测试全部通过
+Expected: PASS，12 个测试全部通过
 
 - [ ] **Step 6: 提交**
 
@@ -2919,7 +2952,586 @@ git commit -m "test(config): 补充授权码流程的协议一致性验收
 
 ---
 
-### Task 11: demo-web-a 与端到端验收
+### Task 11: 登录失败限流
+
+**Files:**
+- Create: `auth-server/src/main/java/com/aventador/unifiedlogin/security/LoginRateLimitProperties.java`
+- Create: `auth-server/src/main/java/com/aventador/unifiedlogin/security/LoginAttemptService.java`
+- Create: `auth-server/src/main/java/com/aventador/unifiedlogin/security/LoginAttemptEventListener.java`
+- Create: `auth-server/src/main/java/com/aventador/unifiedlogin/security/LoginRateLimitFilter.java`
+- Modify: `auth-server/src/main/java/com/aventador/unifiedlogin/config/SecurityConfig.java`
+- Modify: `auth-server/src/main/resources/templates/login.html`
+- Modify: `auth-server/src/main/resources/application.yml`
+- Test: `auth-server/src/test/java/com/aventador/unifiedlogin/security/LoginAttemptServiceTest.java`
+- Test: `auth-server/src/test/java/com/aventador/unifiedlogin/security/LoginRateLimitIntegrationTest.java`
+
+**Interfaces:**
+- Consumes: `EmailAddress.normalize`（Task 2）、`SecurityConfig`（Task 6）、登录表单流程
+- Produces: `LoginAttemptService`，方法 `recordFailure(String email)`、`isLocked(String email): boolean`、`clearFailures(String email)`、`registerAttemptAndCheckRateLimit(String ip): boolean`（返回 true 表示已超限）
+
+**两条关键设计约束**：
+
+1. **对不存在与格式非法的邮箱同样计数并锁定**。若只对真实账号锁定，攻击者用「这个邮箱会不会被锁」就能反推账号是否存在，等于绕开了 Task 6 建立的防枚举。因此这里用 `EmailAddress.normalize` 而非 `new EmailAddress(...)`——后者遇到非法格式会抛异常。
+2. **计数状态在应用内存中**，仅适用于单实例部署。多实例需改共享存储，此约束已写入规格书与本计划的已知限制。
+
+- [ ] **Step 1: 写失败的服务单元测试**
+
+`auth-server/src/test/java/com/aventador/unifiedlogin/security/LoginAttemptServiceTest.java`
+
+用可推进的假时钟测过期，不使用真实等待：
+
+```java
+package com.aventador.unifiedlogin.security;
+
+import com.github.benmanes.caffeine.cache.Ticker;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+
+import java.time.Duration;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+class LoginAttemptServiceTest {
+
+    private MutableTicker ticker;
+    private LoginAttemptService service;
+
+    @BeforeEach
+    void setUp() {
+        ticker = new MutableTicker();
+        service = new LoginAttemptService(new LoginRateLimitProperties(5, Duration.ofMinutes(15), 20), ticker);
+    }
+
+    @Test
+    void doesNotLockBeforeReachingThreshold() {
+        for (int i = 0; i < 4; i++) {
+            service.recordFailure("user@example.com");
+        }
+
+        assertThat(service.isLocked("user@example.com")).isFalse();
+    }
+
+    @Test
+    void locksOnceThresholdReached() {
+        for (int i = 0; i < 5; i++) {
+            service.recordFailure("user@example.com");
+        }
+
+        assertThat(service.isLocked("user@example.com")).isTrue();
+    }
+
+    @Test
+    void countsFailuresIgnoringEmailCase() {
+        service.recordFailure("User@Example.com");
+        service.recordFailure("user@example.COM");
+        service.recordFailure("  USER@EXAMPLE.COM  ");
+        service.recordFailure("user@example.com");
+        service.recordFailure("uSeR@eXaMpLe.CoM");
+
+        assertThat(service.isLocked("user@example.com")).isTrue();
+    }
+
+    @Test
+    void locksMalformedEmailToo() {
+        // 防枚举：对格式非法的输入也要计数，否则「会不会被锁」泄漏账号是否存在
+        for (int i = 0; i < 5; i++) {
+            service.recordFailure("not-an-email");
+        }
+
+        assertThat(service.isLocked("not-an-email")).isTrue();
+    }
+
+    @Test
+    void unlocksAfterLockDurationElapses() {
+        for (int i = 0; i < 5; i++) {
+            service.recordFailure("user@example.com");
+        }
+        assertThat(service.isLocked("user@example.com")).isTrue();
+
+        ticker.advance(Duration.ofMinutes(15).plusSeconds(1));
+
+        assertThat(service.isLocked("user@example.com")).isFalse();
+    }
+
+    @Test
+    void successfulLoginClearsFailureCount() {
+        for (int i = 0; i < 4; i++) {
+            service.recordFailure("user@example.com");
+        }
+
+        service.clearFailures("user@example.com");
+        service.recordFailure("user@example.com");
+
+        assertThat(service.isLocked("user@example.com")).isFalse();
+    }
+
+    @Test
+    void allowsAttemptsUpToIpLimit() {
+        boolean exceeded = false;
+        for (int i = 0; i < 20; i++) {
+            exceeded = service.registerAttemptAndCheckRateLimit("10.0.0.1");
+        }
+
+        assertThat(exceeded).isFalse();
+    }
+
+    @Test
+    void flagsAttemptBeyondIpLimit() {
+        for (int i = 0; i < 20; i++) {
+            service.registerAttemptAndCheckRateLimit("10.0.0.1");
+        }
+
+        assertThat(service.registerAttemptAndCheckRateLimit("10.0.0.1")).isTrue();
+    }
+
+    @Test
+    void tracksIpLimitsIndependentlyPerAddress() {
+        for (int i = 0; i < 21; i++) {
+            service.registerAttemptAndCheckRateLimit("10.0.0.1");
+        }
+
+        assertThat(service.registerAttemptAndCheckRateLimit("10.0.0.2")).isFalse();
+    }
+
+    @Test
+    void resetsIpWindowAfterOneMinute() {
+        for (int i = 0; i < 21; i++) {
+            service.registerAttemptAndCheckRateLimit("10.0.0.1");
+        }
+
+        ticker.advance(Duration.ofMinutes(1).plusSeconds(1));
+
+        assertThat(service.registerAttemptAndCheckRateLimit("10.0.0.1")).isFalse();
+    }
+
+    /** 可手动推进的时钟，避免测试真实等待 15 分钟。 */
+    private static final class MutableTicker implements Ticker {
+
+        private long nanos;
+
+        @Override
+        public long read() {
+            return nanos;
+        }
+
+        void advance(Duration duration) {
+            nanos += duration.toNanos();
+        }
+    }
+}
+```
+
+- [ ] **Step 2: 运行测试确认失败**
+
+Run: `cd auth-server && ./mvnw test -Dtest=LoginAttemptServiceTest`
+Expected: FAIL — 编译错误，`LoginAttemptService` 与 `LoginRateLimitProperties` 尚不存在
+
+- [ ] **Step 3: 写配置项与限流服务**
+
+`auth-server/src/main/java/com/aventador/unifiedlogin/security/LoginRateLimitProperties.java`
+
+```java
+package com.aventador.unifiedlogin.security;
+
+import org.springframework.boot.context.properties.ConfigurationProperties;
+
+import java.time.Duration;
+
+@ConfigurationProperties(prefix = "unified-login.login-rate-limit")
+public record LoginRateLimitProperties(int maxFailuresPerEmail,
+                                       Duration emailLockDuration,
+                                       int maxAttemptsPerIpPerMinute) {
+}
+```
+
+`auth-server/src/main/java/com/aventador/unifiedlogin/security/LoginAttemptService.java`
+
+注意 Caffeine 的 groupId 带连字符（`com.github.ben-manes.caffeine`）而包名不带（`com.github.benmanes.caffeine`）：
+
+```java
+package com.aventador.unifiedlogin.security;
+
+import com.aventador.unifiedlogin.user.EmailAddress;
+import com.github.benmanes.caffeine.cache.Cache;
+import com.github.benmanes.caffeine.cache.Caffeine;
+import com.github.benmanes.caffeine.cache.Ticker;
+import org.springframework.stereotype.Service;
+
+import java.time.Duration;
+
+@Service
+public class LoginAttemptService {
+
+    private static final Duration IP_WINDOW = Duration.ofMinutes(1);
+    private static final int MAX_TRACKED_KEYS = 10_000;
+
+    private final LoginRateLimitProperties properties;
+    private final Cache<String, Integer> failuresByEmail;
+    private final Cache<String, Integer> attemptsByIp;
+
+    public LoginAttemptService(LoginRateLimitProperties properties, Ticker ticker) {
+        this.properties = properties;
+        this.failuresByEmail = Caffeine.newBuilder()
+                .expireAfterWrite(properties.emailLockDuration())
+                .maximumSize(MAX_TRACKED_KEYS)
+                .ticker(ticker)
+                .build();
+        this.attemptsByIp = Caffeine.newBuilder()
+                .expireAfterWrite(IP_WINDOW)
+                .maximumSize(MAX_TRACKED_KEYS)
+                .ticker(ticker)
+                .build();
+    }
+
+    public void recordFailure(String email) {
+        failuresByEmail.asMap().merge(EmailAddress.normalize(email), 1, Integer::sum);
+    }
+
+    public boolean isLocked(String email) {
+        Integer failures = failuresByEmail.getIfPresent(EmailAddress.normalize(email));
+        return failures != null && failures >= properties.maxFailuresPerEmail();
+    }
+
+    public void clearFailures(String email) {
+        failuresByEmail.invalidate(EmailAddress.normalize(email));
+    }
+
+    /** 记录一次来自该地址的尝试，返回 true 表示已超出每分钟上限。 */
+    public boolean registerAttemptAndCheckRateLimit(String clientIp) {
+        Integer attempts = attemptsByIp.asMap().merge(clientIp, 1, Integer::sum);
+        return attempts > properties.maxAttemptsPerIpPerMinute();
+    }
+
+    /** 供测试在用例之间隔离状态；生产代码不调用。 */
+    void clearAll() {
+        failuresByEmail.invalidateAll();
+        attemptsByIp.invalidateAll();
+    }
+}
+```
+
+- [ ] **Step 4: 运行测试确认通过**
+
+Run: `cd auth-server && ./mvnw test -Dtest=LoginAttemptServiceTest`
+Expected: PASS，10 个测试全部通过
+
+- [ ] **Step 5: 写失败的集成测试**
+
+`auth-server/src/test/java/com/aventador/unifiedlogin/security/LoginRateLimitIntegrationTest.java`
+
+```java
+package com.aventador.unifiedlogin.security;
+
+import com.aventador.unifiedlogin.PostgresTestConfig;
+import com.aventador.unifiedlogin.registration.RegistrationService;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.context.annotation.Import;
+import org.springframework.test.web.servlet.MockMvc;
+
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestBuilders.formLogin;
+import static org.springframework.security.test.web.servlet.result.SecurityMockMvcResultMatchers.authenticated;
+import static org.springframework.security.test.web.servlet.result.SecurityMockMvcResultMatchers.unauthenticated;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.redirectedUrl;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+
+@SpringBootTest
+@AutoConfigureMockMvc
+@Import(PostgresTestConfig.class)
+class LoginRateLimitIntegrationTest {
+
+    @Autowired
+    private MockMvc mockMvc;
+
+    @Autowired
+    private RegistrationService registrationService;
+
+    @Autowired
+    private LoginAttemptService loginAttemptService;
+
+    @BeforeEach
+    void resetCounters() {
+        // Spring 会在测试类之间复用同一个应用上下文，限流计数是单例状态，
+        // 不清零会让用例互相干扰
+        loginAttemptService.clearAll();
+    }
+
+    @Test
+    void locksAccountAfterFiveFailuresEvenWithCorrectPassword() throws Exception {
+        String email = "lockout@example.com";
+        registrationService.register(email, "a valid password");
+
+        for (int i = 0; i < 5; i++) {
+            mockMvc.perform(formLogin("/login").user(email).password("wrong password"))
+                    .andExpect(unauthenticated());
+        }
+
+        // 第 6 次即使密码正确也必须被拒
+        mockMvc.perform(formLogin("/login").user(email).password("a valid password"))
+                .andExpect(unauthenticated())
+                .andExpect(redirectedUrl("/login?locked"));
+    }
+
+    @Test
+    void locksUnknownEmailToo() throws Exception {
+        String email = "ghost-lockout@example.com";
+
+        for (int i = 0; i < 5; i++) {
+            mockMvc.perform(formLogin("/login").user(email).password("any password"))
+                    .andExpect(unauthenticated());
+        }
+
+        mockMvc.perform(formLogin("/login").user(email).password("any password"))
+                .andExpect(redirectedUrl("/login?locked"));
+    }
+
+    @Test
+    void successfulLoginResetsFailureCount() throws Exception {
+        String email = "reset-count@example.com";
+        registrationService.register(email, "a valid password");
+
+        for (int i = 0; i < 4; i++) {
+            mockMvc.perform(formLogin("/login").user(email).password("wrong password"))
+                    .andExpect(unauthenticated());
+        }
+
+        mockMvc.perform(formLogin("/login").user(email).password("a valid password"))
+                .andExpect(authenticated());
+
+        // 计数已清零，再错 4 次仍不该锁
+        for (int i = 0; i < 4; i++) {
+            mockMvc.perform(formLogin("/login").user(email).password("wrong password"))
+                    .andExpect(unauthenticated());
+        }
+
+        mockMvc.perform(formLogin("/login").user(email).password("a valid password"))
+                .andExpect(authenticated());
+    }
+
+    @Test
+    void rejectsWithTooManyRequestsBeyondIpLimit() throws Exception {
+        // 用不同邮箱避免先触发账号锁定，从而单独验证 IP 维度
+        for (int i = 0; i < 20; i++) {
+            mockMvc.perform(formLogin("/login").user("ip-" + i + "@example.com").password("any password"));
+        }
+
+        mockMvc.perform(formLogin("/login").user("ip-last@example.com").password("any password"))
+                .andExpect(status().isTooManyRequests());
+    }
+
+    @Test
+    void loginPageShowsLockedNotice() throws Exception {
+        String email = "notice@example.com";
+        registrationService.register(email, "a valid password");
+
+        for (int i = 0; i < 5; i++) {
+            mockMvc.perform(formLogin("/login").user(email).password("wrong password"));
+        }
+
+        mockMvc.perform(formLogin("/login").user(email).password("a valid password"))
+                .andExpect(redirectedUrl("/login?locked"));
+    }
+}
+```
+
+- [ ] **Step 6: 运行测试确认失败**
+
+Run: `cd auth-server && ./mvnw test -Dtest=LoginRateLimitIntegrationTest`
+Expected: FAIL — 限流尚未接入过滤链，连续失败后第 6 次仍按正常登录处理
+
+- [ ] **Step 7: 写事件监听器与限流过滤器**
+
+`auth-server/src/main/java/com/aventador/unifiedlogin/security/LoginAttemptEventListener.java`
+
+```java
+package com.aventador.unifiedlogin.security;
+
+import org.springframework.context.event.EventListener;
+import org.springframework.security.authentication.event.AuthenticationFailureBadCredentialsEvent;
+import org.springframework.security.authentication.event.AuthenticationSuccessEvent;
+import org.springframework.stereotype.Component;
+
+@Component
+public class LoginAttemptEventListener {
+
+    private final LoginAttemptService loginAttemptService;
+
+    public LoginAttemptEventListener(LoginAttemptService loginAttemptService) {
+        this.loginAttemptService = loginAttemptService;
+    }
+
+    /**
+     * 账号不存在时 DaoAuthenticationProvider 会把 UsernameNotFoundException 转成
+     * BadCredentialsException（默认 hideUserNotFoundExceptions=true），因此这里
+     * 天然对不存在的邮箱也会计数，正是防枚举所需要的。
+     */
+    @EventListener
+    public void onFailure(AuthenticationFailureBadCredentialsEvent event) {
+        loginAttemptService.recordFailure(event.getAuthentication().getName());
+    }
+
+    @EventListener
+    public void onSuccess(AuthenticationSuccessEvent event) {
+        loginAttemptService.clearFailures(event.getAuthentication().getName());
+    }
+}
+```
+
+`auth-server/src/main/java/com/aventador/unifiedlogin/security/LoginRateLimitFilter.java`
+
+```java
+package com.aventador.unifiedlogin.security;
+
+import jakarta.servlet.FilterChain;
+import jakarta.servlet.ServletException;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
+import org.springframework.http.HttpStatus;
+import org.springframework.web.filter.OncePerRequestFilter;
+
+import java.io.IOException;
+
+public class LoginRateLimitFilter extends OncePerRequestFilter {
+
+    private static final String LOGIN_PATH = "/login";
+    private static final String USERNAME_PARAMETER = "username";
+
+    private final LoginAttemptService loginAttemptService;
+
+    public LoginRateLimitFilter(LoginAttemptService loginAttemptService) {
+        this.loginAttemptService = loginAttemptService;
+    }
+
+    @Override
+    protected void doFilterInternal(HttpServletRequest request,
+                                    HttpServletResponse response,
+                                    FilterChain filterChain) throws ServletException, IOException {
+        if (!isLoginSubmission(request)) {
+            filterChain.doFilter(request, response);
+            return;
+        }
+
+        if (loginAttemptService.registerAttemptAndCheckRateLimit(request.getRemoteAddr())) {
+            response.sendError(HttpStatus.TOO_MANY_REQUESTS.value(), "登录尝试过于频繁，请稍后再试");
+            return;
+        }
+
+        if (loginAttemptService.isLocked(request.getParameter(USERNAME_PARAMETER))) {
+            response.sendRedirect(request.getContextPath() + "/login?locked");
+            return;
+        }
+
+        filterChain.doFilter(request, response);
+    }
+
+    private static boolean isLoginSubmission(HttpServletRequest request) {
+        return "POST".equalsIgnoreCase(request.getMethod()) && LOGIN_PATH.equals(request.getServletPath());
+    }
+}
+```
+
+- [ ] **Step 8: 接入过滤链并启用配置**
+
+`auth-server/src/main/java/com/aventador/unifiedlogin/config/SecurityConfig.java` 整体替换为：
+
+```java
+package com.aventador.unifiedlogin.config;
+
+import com.aventador.unifiedlogin.security.LoginAttemptService;
+import com.aventador.unifiedlogin.security.LoginRateLimitFilter;
+import com.aventador.unifiedlogin.security.LoginRateLimitProperties;
+import com.github.benmanes.caffeine.cache.Ticker;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.core.annotation.Order;
+import org.springframework.security.authentication.AuthenticationEventPublisher;
+import org.springframework.security.authentication.DefaultAuthenticationEventPublisher;
+import org.springframework.security.config.Customizer;
+import org.springframework.security.config.annotation.web.builders.HttpSecurity;
+import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
+import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
+
+@Configuration
+@EnableWebSecurity
+@EnableConfigurationProperties(LoginRateLimitProperties.class)
+public class SecurityConfig {
+
+    @Bean
+    @Order(2)
+    public SecurityFilterChain defaultSecurityFilterChain(HttpSecurity http,
+                                                          LoginAttemptService loginAttemptService) throws Exception {
+        http
+                .authorizeHttpRequests((authorize) -> authorize
+                        .requestMatchers("/register", "/login").permitAll()
+                        .anyRequest().authenticated())
+                .formLogin(Customizer.withDefaults())
+                .addFilterBefore(new LoginRateLimitFilter(loginAttemptService),
+                        UsernamePasswordAuthenticationFilter.class);
+
+        return http.build();
+    }
+
+    /** 生产使用系统时钟；测试可覆盖为可推进的假时钟。 */
+    @Bean
+    public Ticker loginAttemptTicker() {
+        return Ticker.systemTicker();
+    }
+
+    /** 显式声明，确保认证成功与失败事件一定被发布，限流的计数不依赖自动配置的默认行为。 */
+    @Bean
+    public AuthenticationEventPublisher authenticationEventPublisher(ApplicationEventPublisher publisher) {
+        return new DefaultAuthenticationEventPublisher(publisher);
+    }
+}
+```
+
+在 `auth-server/src/main/resources/application.yml` 的 `unified-login:` 节点下追加（与 `clients` 同级）：
+
+```yaml
+  login-rate-limit:
+    max-failures-per-email: 5
+    email-lock-duration: 15m
+    max-attempts-per-ip-per-minute: 20
+```
+
+- [ ] **Step 9: 在登录页显示锁定提示**
+
+在 `auth-server/src/main/resources/templates/login.html` 的错误提示下方追加一行：
+
+```html
+    <p th:if="${param.locked}" data-testid="login-locked">尝试次数过多，请在 15 分钟后再试</p>
+```
+
+- [ ] **Step 10: 运行测试确认通过**
+
+Run: `cd auth-server && ./mvnw test -Dtest=LoginRateLimitIntegrationTest`
+Expected: PASS，5 个测试全部通过
+
+- [ ] **Step 11: 运行全部测试**
+
+Run: `cd auth-server && ./mvnw test`
+Expected: 全部通过。若其他登录相关测试类出现意外的 429 或 `/login?locked`，说明限流状态在测试类之间泄漏——应在受影响的测试类补 `loginAttemptService.clearAll()`，而不是调高阈值掩盖问题
+
+- [ ] **Step 12: 提交**
+
+```bash
+git add auth-server/src
+git commit -m "feat(security): 新增登录失败限流
+
+同一邮箱连续失败五次后锁定十五分钟，同一地址每分钟最多尝试二十次。
+对不存在与格式非法的邮箱同样计数，避免「会不会被锁」反过来泄漏
+账号是否存在。计数保存在应用内存中，仅适用于单实例部署。"
+```
+
+---
+
+### Task 12: demo-web-a 与端到端验收
 
 **Files:**
 - Create: `demo/demo-web-a/package.json`
@@ -3272,6 +3884,22 @@ test('密码错误时提示信息不透露账号是否存在', async ({ page }) 
 cd e2e && pnpm install && pnpm exec playwright install chromium && pnpm test
 ```
 
+E2E 的全部用例都从同一个地址发起登录，反复重跑容易撞上每分钟 20 次的地址限流。
+跑 E2E 时用环境变量把该阈值调高即可：
+
+```bash
+UNIFIED_LOGIN_LOGIN_RATE_LIMIT_MAXATTEMPTSPERIPPERMINUTE=1000 ./mvnw spring-boot:run
+```
+
+这是**配置值差异，不是代码分支**——限流的判定逻辑与生产完全是同一条路径，只是阈值不同。
+账号维度的锁定阈值不要调整，E2E 用例本身不会触发它。
+
+## 手工验证限流
+
+限流的自动化覆盖在 `LoginRateLimitIntegrationTest`（真实 Spring 上下文 + 真实数据库）。
+不放进 E2E 是因为一旦触发锁定会干扰同批次的其他用例。若要手工确认，用同一个邮箱连续
+输错 5 次密码，第 6 次即使密码正确也会跳到 `/login?locked` 并显示锁定提示。
+
 ## 收尾
 
 验收结束后停掉 PostgreSQL 容器与两个开发服务，避免端口与资源占用。
@@ -3310,3 +3938,4 @@ git commit -m "feat(demo): 新增 demo-web-a 与端到端验收用例
 4. 认证中心重启后，此前签发的令牌仍可验签（验证签名密钥确实落盘复用）。
 5. 数据库中 `app_user` 表内密码列为 `$argon2id$` 开头的哈希，不存在任何明文密码。
 6. 解开一个实际签发的 access token，确认 `sub` 是 UUID 而非邮箱，且载荷中不含任何角色或权限字段。
+7. 手工用同一邮箱连续输错 5 次密码，确认第 6 次即使密码正确也被拒绝并跳转到 `/login?locked`。
