@@ -21,6 +21,9 @@
   - `org.springframework.security.config.annotation.web.configurers.oauth2.server.authorization.OAuth2AuthorizationServerConfigurer`
   - `org.springframework.security.config.annotation.web.configuration.OAuth2AuthorizationServerConfiguration`
   - 其余类（`RegisteredClient`、`AuthorizationServerSettings`、`JdbcRegisteredClientRepository`、`JdbcOAuth2AuthorizationService`）包路径**未变**，仍在 `org.springframework.security.oauth2.server.authorization.*` 下。
+- **⚠ `@DynamicPropertySource` 只在测试类中生效**：放在 `@TestConfiguration`/`@Configuration`
+  类里会被**静默忽略**——属性没被覆盖、测试照常通过，缺陷完全不可见。要在配置类里注册
+  动态属性，用 `@Bean DynamicPropertyRegistrar`（Spring Framework 7 提供）。
 - **⚠ MockMvc 测授权端点必须把参数放进 query string，不能用 `.param()`**：框架的
   `OAuth2EndpointUtils.getQueryParameters` 会用 `request.getQueryString()` 过滤参数，
   而 MockMvc 的 `.param()` 只填 parameterMap、不填 queryString，导致所有授权参数被
@@ -303,8 +306,7 @@ package com.aventador.unifiedlogin;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
 import org.springframework.context.annotation.Bean;
-import org.springframework.test.context.DynamicPropertyRegistry;
-import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.test.context.DynamicPropertyRegistrar;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 
 import java.io.IOException;
@@ -324,12 +326,15 @@ public class PostgresTestConfig {
      * 所有加载完整上下文的测试都会实例化 JWKSource，从而按配置路径生成一把真实 RSA 私钥。
      * 这里统一把密钥路径改写到临时目录：否则每次跑测试都会在项目目录下落一把真私钥，
      * 且「首次生成」分支因文件已存在而不再被执行。
+     *
+     * 用 DynamicPropertyRegistrar 而非 @DynamicPropertySource：**后者只在测试类中被扫描，
+     * 放在配置类里会被静默忽略**（隔离看似生效、实际完全没起作用）。
      */
-    @DynamicPropertySource
-    static void isolateJwtKeyStore(DynamicPropertyRegistry registry) throws IOException {
+    @Bean
+    DynamicPropertyRegistrar jwtKeyStoreRegistrar() throws IOException {
         Path keyDir = Files.createTempDirectory("unified-login-test-keys");
         keyDir.toFile().deleteOnExit();
-        registry.add("unified-login.jwt-key-store",
+        return (registry) -> registry.add("unified-login.jwt-key-store",
                 () -> keyDir.resolve("jwt-signing-key.json").toString());
     }
 }
