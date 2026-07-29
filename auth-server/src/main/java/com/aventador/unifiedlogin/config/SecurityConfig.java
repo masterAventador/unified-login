@@ -14,12 +14,8 @@ public class SecurityConfig {
     public SecurityFilterChain defaultSecurityFilterChain(HttpSecurity http) throws Exception {
         http
                 .authorizeHttpRequests((authorize) -> authorize
-                        .requestMatchers("/register").permitAll()
-                        .anyRequest().authenticated())
-                .exceptionHandling((exceptionHandling) -> exceptionHandling
-                        .accessDeniedHandler((request, response, accessDeniedException) -> {
-                            response.sendError(403, "Forbidden");
-                        }));
+                        .requestMatchers("/register", "/error").permitAll()
+                        .anyRequest().authenticated());
 
         return http.build();
     }
