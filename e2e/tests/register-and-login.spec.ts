@@ -40,9 +40,12 @@ async function registerDirectly(page: Page, email: string): Promise<void> {
 /** 同上，直接提交登录表单。 */
 async function loginDirectly(page: Page, email: string): Promise<void> {
   await page.goto(`${AUTH_BASE}/login`)
-  await page.request.post(`${AUTH_BASE}/login`, {
+  const response = await page.request.post(`${AUTH_BASE}/login`, {
     form: { username: email, password: PASSWORD, _csrf: await csrfToken(page) },
   })
+  // 登录失败同样是 200（重新渲染登录页），只有落到 /login?error 之外才算成功。
+  // 不断言的话，登录静默失败只会表现为后面某个 toBeVisible() 超时，排查时看不出真正原因
+  expect(response.url()).not.toContain('/login?error')
 }
 
 test('新用户注册后可通过统一登录进入 demo-web-a', async ({ page }) => {
@@ -112,6 +115,23 @@ test('邮箱里的 HTML 被当文本渲染，不会在接入方页面里变成�
   await expect(page.locator('#app img')).toHaveCount(0)
   // 原样显示：邮箱里的尖括号必须是可见字符，而不是被浏览器解析掉的标签
   await expect(page.getByTestId('signed-in-user')).toHaveText(`已登录：${email}`)
+})
+
+test('伪造的回调因 state 不符被拒绝，页面显示错误而不是登录态', async ({ page }) => {
+  // 这里刻意不预先登录：有会话时点登录会立刻免登回跳，页面根本停不在认证中心，
+  // 拿不到「已写入 state 但尚未回调」的中间态。没有会话才会停在登录页。
+  await page.goto('/')
+  await page.getByTestId('login-button').click()
+  // 停在认证中心登录页即说明 state 与 code_verifier 已写进 demo 的 sessionStorage
+  await expect(page.locator('#username')).toBeVisible()
+
+  // 攻击者把自己拿到的 code 塞进受害者的回调地址，但 state 对不上
+  await page.goto('/callback?code=forged-authorization-code&state=not-the-expected-state')
+
+  await expect(page.getByTestId('auth-error')).toBeVisible()
+  await expect(page.getByTestId('auth-error')).toHaveText(/state 校验失败/)
+  // 真正要守的是终态：绝不能因为收到伪造回调就进入登录态
+  await expect(page.getByTestId('signed-in-user')).toHaveCount(0)
 })
 
 test('密码错误时提示信息不透露账号是否存在', async ({ page }) => {

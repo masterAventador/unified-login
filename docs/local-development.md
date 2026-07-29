@@ -23,7 +23,7 @@ cd e2e && pnpm install && pnpm test
 配置已用 `channel: "chrome"` 复用本机 Google Chrome，**不要执行 `playwright install`**。
 安装依赖时用 `PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 pnpm install` 可避免顺带下载一份 Chromium。
 
-一整轮 E2E 只会向 `/login` 提交 4 次（三条用例分别是 1、1、2 次），而地址限流的阈值是每分钟 20 次，
+一整轮 E2E 只会向 `/login` 提交 6 次（五条用例分别是 1、1、1、0、2 次），而地址限流的阈值是每分钟 20 次，
 因此**按生产默认配置跑一轮不会触发限流**，不需要为验收调整任何阈值。
 只有在一分钟内反复重跑五轮以上时才会撞上。真要密集重跑，用环境变量把阈值调高：
 
