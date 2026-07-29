@@ -21,6 +21,12 @@
   - `org.springframework.security.config.annotation.web.configurers.oauth2.server.authorization.OAuth2AuthorizationServerConfigurer`
   - `org.springframework.security.config.annotation.web.configuration.OAuth2AuthorizationServerConfiguration`
   - 其余类（`RegisteredClient`、`AuthorizationServerSettings`、`JdbcRegisteredClientRepository`、`JdbcOAuth2AuthorizationService`）包路径**未变**，仍在 `org.springframework.security.oauth2.server.authorization.*` 下。
+- **⚠ MockMvc 测授权端点必须把参数放进 query string，不能用 `.param()`**：框架的
+  `OAuth2EndpointUtils.getQueryParameters` 会用 `request.getQueryString()` 过滤参数，
+  而 MockMvc 的 `.param()` 只填 parameterMap、不填 queryString，导致所有授权参数被
+  静默丢弃、端点报 `invalid_request: response_type`。GET `/oauth2/authorize` 一律写成
+  `get("/oauth2/authorize?response_type=code&...")`。（POST `/oauth2/token` 不受影响，
+  它走 form 参数路径，`.param()` 正常。）
 - **⚠ OAuth2AuthorizationServerConfigurer 在 Security 7 无 `authorizationServer()` 静态工厂**：
   旧 1.x 文档的 `OAuth2AuthorizationServerConfigurer.authorizationServer()` 已不存在，
   使用无参构造 `new OAuth2AuthorizationServerConfigurer()`。
@@ -2566,13 +2572,15 @@ class OidcEndpointsTest {
 
     @Test
     void authorizationEndpointRedirectsAnonymousUserToLogin() throws Exception {
-        mockMvc.perform(get("/oauth2/authorize")
-                        .param("response_type", "code")
-                        .param("client_id", "demo-web-a")
-                        .param("redirect_uri", "http://localhost:5173/callback")
-                        .param("scope", "openid")
-                        .param("code_challenge", "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM")
-                        .param("code_challenge_method", "S256"))
+        // 参数必须写进 query string：框架用 request.getQueryString() 过滤授权参数，
+        // 而 MockMvc 的 .param() 不填充 queryString，参数会被整批丢弃报 invalid_request
+        mockMvc.perform(get("/oauth2/authorize"
+                        + "?response_type=code"
+                        + "&client_id=demo-web-a"
+                        + "&redirect_uri=http%3A%2F%2Flocalhost%3A5173%2Fcallback"
+                        + "&scope=openid"
+                        + "&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+                        + "&code_challenge_method=S256"))
                 .andExpect(status().is3xxRedirection());
     }
 }
@@ -2802,8 +2810,12 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 
 import java.net.URI;
+import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
@@ -2821,15 +2833,33 @@ public final class OAuth2TestFlows {
     private OAuth2TestFlows() {
     }
 
+    /**
+     * 构造授权端点 URI。**参数必须放在 query string 里**：框架用
+     * request.getQueryString() 过滤授权参数，而 MockMvc 的 .param() 不填充 queryString，
+     * 用 .param() 会让参数被整批丢弃、端点报 invalid_request。
+     */
+    public static String authorizeUri(Map<String, String> params) {
+        return params.entrySet().stream()
+                .map((e) -> URLEncoder.encode(e.getKey(), StandardCharsets.UTF_8)
+                        + "=" + URLEncoder.encode(e.getValue(), StandardCharsets.UTF_8))
+                .collect(Collectors.joining("&", "/oauth2/authorize?", ""));
+    }
+
+    /** 标准的合法授权请求参数（可按需覆盖或删改某项来构造异常场景）。 */
+    public static Map<String, String> validAuthorizeParams() {
+        Map<String, String> params = new LinkedHashMap<>();
+        params.put("response_type", "code");
+        params.put("client_id", CLIENT_ID);
+        params.put("redirect_uri", REDIRECT_URI);
+        params.put("scope", "openid");
+        params.put("code_challenge", CODE_CHALLENGE);
+        params.put("code_challenge_method", "S256");
+        return params;
+    }
+
     /** 以已登录用户身份走一次授权端点，返回回调地址中的一次性授权码。 */
     public static String authorizeAndExtractCode(MockMvc mockMvc, String userEmail) throws Exception {
-        MvcResult result = mockMvc.perform(get("/oauth2/authorize")
-                        .param("response_type", "code")
-                        .param("client_id", CLIENT_ID)
-                        .param("redirect_uri", REDIRECT_URI)
-                        .param("scope", "openid")
-                        .param("code_challenge", CODE_CHALLENGE)
-                        .param("code_challenge_method", "S256")
+        MvcResult result = mockMvc.perform(get(authorizeUri(validAuthorizeParams()))
                         .with(user(userEmail)))
                 .andExpect(status().is3xxRedirection())
                 .andReturn();
@@ -3072,11 +3102,14 @@ import org.springframework.context.annotation.Import;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 
+import java.util.Map;
+
 import static com.aventador.unifiedlogin.support.OAuth2TestFlows.CLIENT_ID;
-import static com.aventador.unifiedlogin.support.OAuth2TestFlows.CODE_CHALLENGE;
 import static com.aventador.unifiedlogin.support.OAuth2TestFlows.CODE_VERIFIER;
 import static com.aventador.unifiedlogin.support.OAuth2TestFlows.REDIRECT_URI;
 import static com.aventador.unifiedlogin.support.OAuth2TestFlows.authorizeAndExtractCode;
+import static com.aventador.unifiedlogin.support.OAuth2TestFlows.authorizeUri;
+import static com.aventador.unifiedlogin.support.OAuth2TestFlows.validAuthorizeParams;
 import static com.aventador.unifiedlogin.support.OAuth2TestFlows.exchangeCode;
 import static com.aventador.unifiedlogin.support.OAuth2TestFlows.jsonField;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -3153,25 +3186,20 @@ class AuthorizationCodeFlowTest {
 
     @Test
     void authorizationRequestWithoutPkceIsRejected() throws Exception {
-        mockMvc.perform(get("/oauth2/authorize")
-                        .param("response_type", "code")
-                        .param("client_id", CLIENT_ID)
-                        .param("redirect_uri", REDIRECT_URI)
-                        .param("scope", "openid")
-                        .with(user(USER_EMAIL)))
+        Map<String, String> params = validAuthorizeParams();
+        params.remove("code_challenge");
+        params.remove("code_challenge_method");
+
+        mockMvc.perform(get(authorizeUri(params)).with(user(USER_EMAIL)))
                 .andExpect(status().isBadRequest());
     }
 
     @Test
     void redirectUriOutsideWhitelistIsRejectedWithoutRedirecting() throws Exception {
-        MvcResult result = mockMvc.perform(get("/oauth2/authorize")
-                        .param("response_type", "code")
-                        .param("client_id", CLIENT_ID)
-                        .param("redirect_uri", "https://attacker.example.com/steal")
-                        .param("scope", "openid")
-                        .param("code_challenge", CODE_CHALLENGE)
-                        .param("code_challenge_method", "S256")
-                        .with(user(USER_EMAIL)))
+        Map<String, String> params = validAuthorizeParams();
+        params.put("redirect_uri", "https://attacker.example.com/steal");
+
+        MvcResult result = mockMvc.perform(get(authorizeUri(params)).with(user(USER_EMAIL)))
                 .andExpect(status().isBadRequest())
                 .andReturn();
 
