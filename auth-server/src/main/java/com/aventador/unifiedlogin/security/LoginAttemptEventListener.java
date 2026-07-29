@@ -1,10 +1,12 @@
 package com.aventador.unifiedlogin.security;
 
 import org.springframework.context.event.EventListener;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.authentication.event.AbstractAuthenticationFailureEvent;
 import org.springframework.security.authentication.event.AuthenticationFailureProviderNotFoundEvent;
 import org.springframework.security.authentication.event.AuthenticationFailureServiceExceptionEvent;
 import org.springframework.security.authentication.event.AuthenticationSuccessEvent;
+import org.springframework.security.core.Authentication;
 import org.springframework.stereotype.Component;
 
 @Component
@@ -27,10 +29,18 @@ public class LoginAttemptEventListener {
      */
     @EventListener
     public void onFailure(AbstractAuthenticationFailureEvent event) {
-        if (isInfrastructureFailure(event)) {
+        if (isInfrastructureFailure(event) || !isFormLogin(event.getAuthentication())) {
             return;
         }
         loginAttemptService.recordFailure(event.getAuthentication().getName());
+    }
+
+    @EventListener
+    public void onSuccess(AuthenticationSuccessEvent event) {
+        if (!isFormLogin(event.getAuthentication())) {
+            return;
+        }
+        loginAttemptService.clearFailures(event.getAuthentication().getName());
     }
 
     /**
@@ -42,8 +52,18 @@ public class LoginAttemptEventListener {
                 || event instanceof AuthenticationFailureProviderNotFoundEvent;
     }
 
-    @EventListener
-    public void onSuccess(AuthenticationSuccessEvent event) {
-        loginAttemptService.clearFailures(event.getAuthentication().getName());
+    /**
+     * 只有表单登录才该动登录限流计数。
+     *
+     * <p>资源服务器校验 Bearer token 失败时抛的是 InvalidBearerTokenException，同样被映射成
+     * BadCredentials 事件，而它的主体是 BearerTokenAuthenticationToken，{@code getName()} 直接返回
+     * token 字符串。若照单计数，攻击者拿随机 token 猛打 /userinfo 就能往邮箱计数表里塞满垃圾键，
+     * 靠 maximumSize 淘汰把某个真实邮箱已生效的锁定记录挤出去，锁定随之消失——一条锁定绕过路径。
+     *
+     * <p>按令牌类型过滤是精确的：表单登录无论成功、密码错误、账号不存在还是账号被禁用，
+     * 主体都是 UsernamePasswordAuthenticationToken；而客户端认证、Bearer token 校验都不是。
+     */
+    private static boolean isFormLogin(Authentication authentication) {
+        return authentication instanceof UsernamePasswordAuthenticationToken;
     }
 }

@@ -8,11 +8,14 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.context.annotation.Import;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.web.servlet.MockMvc;
 
 import java.time.Duration;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.not;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestBuilders.formLogin;
@@ -45,6 +48,9 @@ class LoginRateLimitIntegrationTest {
 
     @Autowired
     private JdbcTemplate jdbcTemplate;
+
+    @Autowired
+    private LoginAttemptService loginAttemptService;
 
     // 计数在每个测试方法前由 LoginAttemptResetTestExecutionListener 统一清零，
     // 否则同一个类里靠前的用例消耗掉的尝试次数会把靠后的用例顶过 IP 上限
@@ -105,6 +111,23 @@ class LoginRateLimitIntegrationTest {
         mockMvc.perform(formLogin("/login").user(email).password(PASSWORD))
                 .andExpect(unauthenticated())
                 .andExpect(redirectedUrl(LOCKED_URL));
+    }
+
+    @Test
+    void badBearerTokensDoNotPolluteTheEmailFailureCounter() throws Exception {
+        // 资源服务器的坏 token 失败也会映射成 BadCredentials 事件，若照单计数，
+        // 键就是 token 字符串本身。攻击者刷满一万个随机 token 即可按大小淘汰
+        // 把某个真实邮箱已生效的锁定记录挤出缓存，锁定随之消失——一条锁定绕过路径
+        String badToken = "definitely-not-a-jwt";
+
+        for (int i = 0; i < 5; i++) {
+            mockMvc.perform(get("/userinfo")
+                            .header(HttpHeaders.AUTHORIZATION, "Bearer " + badToken)
+                            .accept(MediaType.APPLICATION_JSON))
+                    .andExpect(status().isUnauthorized());
+        }
+
+        assertThat(loginAttemptService.isLocked(badToken)).isFalse();
     }
 
     @Test
