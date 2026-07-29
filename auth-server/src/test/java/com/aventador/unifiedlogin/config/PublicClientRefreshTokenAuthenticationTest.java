@@ -14,7 +14,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.not;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
@@ -73,33 +72,9 @@ class PublicClientRefreshTokenAuthenticationTest {
         assertThat(OAuth2TestFlows.jsonField(refreshed, "access_token")).isNotBlank();
     }
 
-    @Test
-    void authorizationCodeExchangeWithoutCodeVerifierIsRejected() throws Exception {
-        // PKCE 是本系统唯一的客户端身份证明手段。自定义认证路径一旦扩到授权码流程，
-        // 这条会变绿——它必须一直是红线。
-        String code = authorizationCodeFor("boundary-noverifier@example.com");
-
-        mockMvc.perform(post("/oauth2/token")
-                        .param("grant_type", "authorization_code")
-                        .param("client_id", OAuth2TestFlows.CLIENT_ID)
-                        .param("code", code)
-                        .param("redirect_uri", OAuth2TestFlows.REDIRECT_URI))
-                .andExpect(status().is(not(200)));
-    }
-
-    @Test
-    void authorizationCodeExchangeWithWrongCodeVerifierIsRejected() throws Exception {
-        String code = authorizationCodeFor("boundary-badverifier@example.com");
-
-        mockMvc.perform(post("/oauth2/token")
-                        .param("grant_type", "authorization_code")
-                        .param("client_id", OAuth2TestFlows.CLIENT_ID)
-                        .param("code", code)
-                        .param("redirect_uri", OAuth2TestFlows.REDIRECT_URI)
-                        .param("code_verifier", "this-is-not-the-right-verifier-value-000000000"))
-                .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.error").value("invalid_grant"));
-    }
+    // 「授权码换令牌时缺失 / 错误 code_verifier 被拒」这两条曾经也在本类，现已合并到
+    // AuthorizationCodeFlowTest（那里的断言更强，且 PKCE 校验本身属于授权码协议一致性）。
+    // 两处各守一半的结果是下次改动只有一处会被更新。
 
     private String authorizationCodeFor(String email) throws Exception {
         registrationService.register(email, PASSWORD);

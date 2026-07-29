@@ -8,6 +8,7 @@ import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.web.util.UriComponentsBuilder;
 
 import java.net.URI;
+import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
@@ -153,6 +154,11 @@ public final class OAuth2TestFlows {
      *
      * <p>授权端点的参数错误同样是经由回调地址回传的（RFC 6749 §4.1.2.1），断言这类
      * 响应时既要看回传了哪些参数，也要看**没有**回传哪些（比如授权码），因此需要拿到全集。
+     *
+     * <p>返回的键值都已解码。error_description、state 这类参数在回调里是百分号编码的，
+     * 若原样返回，调用方断言 "Client authentication failed" 会拿到
+     * "Client%20authentication%20failed"——这种失败最顺手的"修法"就是把断言放宽，
+     * 正是本项目要避免的方向。
      */
     public static Map<String, String> queryParams(String url) {
         String query = URI.create(url).getQuery();
@@ -162,8 +168,12 @@ public final class OAuth2TestFlows {
                 .map((pair) -> pair.split("=", 2))
                 .filter((parts) -> parts.length == 2)
                 // 同名参数取第一个，与 queryParam 原有语义一致
-                .collect(Collectors.toMap((parts) -> parts[0], (parts) -> parts[1],
+                .collect(Collectors.toMap((parts) -> decode(parts[0]), (parts) -> decode(parts[1]),
                         (first, duplicate) -> first, LinkedHashMap::new));
+    }
+
+    private static String decode(String value) {
+        return URLDecoder.decode(value, StandardCharsets.UTF_8);
     }
 
     private static String queryParam(String url, String name) {

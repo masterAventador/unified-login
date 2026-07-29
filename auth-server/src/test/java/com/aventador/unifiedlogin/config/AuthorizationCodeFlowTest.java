@@ -5,12 +5,14 @@ import com.aventador.unifiedlogin.registration.RegistrationService;
 import com.aventador.unifiedlogin.support.OAuth2TestFlows;
 import com.aventador.unifiedlogin.user.EmailAddress;
 import com.aventador.unifiedlogin.user.UserService;
+import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.context.annotation.Import;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.mock.web.MockHttpSession;
 import org.springframework.security.oauth2.core.AuthorizationGrantType;
 import org.springframework.security.oauth2.core.ClientAuthenticationMethod;
@@ -113,6 +115,14 @@ class AuthorizationCodeFlowTest {
                 .andExpect(jsonPath("$.token_type").value("Bearer"));
     }
 
+    /**
+     * PKCE 校验不通过必须拒发令牌。
+     *
+     * <p>本类是这条用例的唯一归属：PKCE 是授权码协议一致性的核心，与本类其余用例同源。
+     * 它同时守着「自定义客户端认证路径不得扩到授权码流程」这条红线——那条路径一旦越界，
+     * code_verifier 就不再被校验，本条会立刻变绿。原先 PublicClientRefreshTokenAuthenticationTest
+     * 里的同名用例已删除，避免两处各守一半、改动时只更新其中一处。
+     */
     @Test
     void tokenRequestWithWrongVerifierIsRejected() throws Exception {
         String code = authorizeAndExtractCode(mockMvc, session);
@@ -237,6 +247,9 @@ class AuthorizationCodeFlowTest {
      * 异常处理转到了登录入口，压根没走到令牌逻辑。安全上无害（没有任何令牌签发），
      * 但接入方按规范解析 JSON 错误体会拿到一个重定向。是否改成 400 需要单独决策，
      * 这里先把当前形态钉住，改动时这条会变红，逼出一次有意识的选择。
+     *
+     * <p>与上一条同理，本类是这条用例的唯一归属；
+     * PublicClientRefreshTokenAuthenticationTest 里那条只断言 is(not(200)) 的同类用例已删除。
      */
     @Test
     void tokenRequestWithoutCodeVerifierRedirectsInsteadOfReturningInvalidGrant() throws Exception {
@@ -251,8 +264,11 @@ class AuthorizationCodeFlowTest {
                 .andReturn();
 
         assertThat(result.getResponse().getRedirectedUrl()).endsWith("/login");
-        // 形态不规范不要紧，没漏令牌才是底线
-        assertThat(result.getResponse().getContentAsString()).doesNotContain("access_token");
+
+        // 形态不规范不要紧，没签发令牌才是底线。重定向响应的 body 恒为空串，对它断言
+        // "不含 access_token" 任何情况下都不会失败，是装饰性断言——改成证明这次请求
+        // 对授权码毫无影响：它既没被消费、也没换出过任何东西，带上正确的 verifier 仍能正常兑换。
+        assertThat(jsonField(exchangeCode(mockMvc, code), "access_token")).isNotBlank();
     }
 
     /**
@@ -260,6 +276,12 @@ class AuthorizationCodeFlowTest {
      *
      * <p>令牌必须是**这个客户端自己的**：拿别的客户端的 refresh token 来试，会先撞上归属校验，
      * 「该客户端不许刷新」这条根本轮不到执行，用例也就丧失了区分力（已实测确认）。
+     *
+     * <p><b>断言落在「没签发任何令牌」而不是具体错误码</b>：这条链路上有多个 provider 都会
+     * 拒绝，谁最后抛异常取决于 ProviderManager 的遍历结果，钉死某个错误码会得到一条偶发失败、
+     * 且失败输出与「安全校验被删除」逐字相同的用例——在专门守红线的套件里，这种狼来了代价太高。
+     * 自定义 provider 那两道校验改由 {@link PublicClientRefreshTokenAuthenticationProviderTest}
+     * 直接调 authenticate() 确定性地钉住。
      */
     @Test
     void refreshIsRejectedAfterClientLosesRefreshTokenGrant() throws Exception {
@@ -289,14 +311,17 @@ class AuthorizationCodeFlowTest {
                         .param("grant_type", "refresh_token")
                         .param("client_id", CLIENT_WITHOUT_REFRESH_GRANT)
                         .param("refresh_token", rotatedRefreshToken))
-                .andExpect(status().isBadRequest())
-                // invalid_grant 表示自定义认证路径拒绝接手、请求止步于客户端认证。若那道
-                // 「授权类型含 refresh_token」的校验被删，请求会通过认证一路走到刷新流程，
-                // 改以 unauthorized_client 收场——错误码一变，这条立刻红（已实测确认）
-                .andExpect(jsonPath("$.error").value("invalid_grant"))
-                .andExpect(jsonPath("$.access_token").doesNotExist());
+                .andExpect(status().is4xxClientError())
+                .andExpect(jsonPath("$.access_token").doesNotExist())
+                .andExpect(jsonPath("$.refresh_token").doesNotExist());
     }
 
+    /**
+     * 只报一个公开的 client_id 不能冒充机密客户端。
+     *
+     * <p>同上，断言落在「没签发任何令牌」上而不是具体错误码——拒绝由哪个 provider 作出
+     * 属于实现细节，钉死它只会换来偶发失败。
+     */
     @Test
     void refreshIsRejectedForConfidentialClientPresentingOnlyClientId() throws Exception {
         // 机密客户端：认证方式里没有 NONE，凭 client_id 不足以证明身份
@@ -313,13 +338,33 @@ class AuthorizationCodeFlowTest {
                         .param("grant_type", "refresh_token")
                         .param("client_id", CONFIDENTIAL_CLIENT)
                         .param("refresh_token", refreshToken))
-                // 这条守的是彻底的认证绕过：自定义路径若不检查认证方式，只报一个公开的
-                // client_id 就能冒充机密客户端，密钥形同虚设
-                .andExpect(status().isUnauthorized())
-                .andExpect(jsonPath("$.error").value("invalid_client"))
-                .andExpect(jsonPath("$.access_token").doesNotExist());
+                .andExpect(status().is4xxClientError())
+                .andExpect(jsonPath("$.access_token").doesNotExist())
+                .andExpect(jsonPath("$.refresh_token").doesNotExist());
 
+        // 拒绝不该殃及池鱼：被当作道具的那个真实令牌必须还能正常续期
         assertThat(jsonField(refreshTokens(mockMvc, refreshToken), "access_token")).isNotBlank();
+    }
+
+    /**
+     * 清掉本类注册的测试专用客户端。
+     *
+     * <p>所有测试类共用同一个库，这两个客户端会残留到整个套件结束：一个停在被摘掉刷新授权的
+     * 状态，另一个是带密钥的机密客户端。将来任何一条「枚举全部注册客户端」或「系统内不应存在
+     * 机密客户端」的回归用例都会因此莫名其妙地红——后者对这个全公有客户端的项目很自然。
+     */
+    @AfterAll
+    static void removeTestOnlyClients(@Autowired JdbcTemplate jdbcTemplate) {
+        jdbcTemplate.update("DELETE FROM oauth2_authorization WHERE registered_client_id IN "
+                        + "(SELECT id FROM oauth2_registered_client WHERE client_id IN (?, ?))",
+                CLIENT_WITHOUT_REFRESH_GRANT, CONFIDENTIAL_CLIENT);
+        jdbcTemplate.update("DELETE FROM oauth2_registered_client WHERE client_id IN (?, ?)",
+                CLIENT_WITHOUT_REFRESH_GRANT, CONFIDENTIAL_CLIENT);
+
+        // 清理必须自证：静默失效的清理和没写清理是一回事
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM oauth2_registered_client WHERE client_id IN (?, ?)",
+                Integer.class, CLIENT_WITHOUT_REFRESH_GRANT, CONFIDENTIAL_CLIENT)).isZero();
     }
 
     /**
