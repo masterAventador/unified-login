@@ -2826,17 +2826,19 @@ git commit -m "feat(config): 启用 OIDC 协议端点并持久化签名密钥
 ```java
 package com.aventador.unifiedlogin.support;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.mock.web.MockHttpSession;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
+import org.springframework.web.util.UriComponentsBuilder;
 
 import java.net.URI;
-import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.Map;
-import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestBuilders.formLogin;
@@ -2852,6 +2854,8 @@ public final class OAuth2TestFlows {
     public static final String CODE_VERIFIER = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
     public static final String CODE_CHALLENGE = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
 
+    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+
     private OAuth2TestFlows() {
     }
 
@@ -2861,10 +2865,11 @@ public final class OAuth2TestFlows {
      * 用 .param() 会让参数被整批丢弃、端点报 invalid_request。
      */
     public static String authorizeUri(Map<String, String> params) {
-        return params.entrySet().stream()
-                .map((e) -> URLEncoder.encode(e.getKey(), StandardCharsets.UTF_8)
-                        + "=" + URLEncoder.encode(e.getValue(), StandardCharsets.UTF_8))
-                .collect(Collectors.joining("&", "/oauth2/authorize?", ""));
+        UriComponentsBuilder builder = UriComponentsBuilder.fromPath("/oauth2/authorize");
+        params.forEach(builder::queryParam);
+        // 必须 encode()：Task 10 会构造含特殊字符的非法参数来测边界，
+        // 不编码时这些字符会破坏查询串结构，失败现象与测试意图无关、极难排查
+        return builder.build().encode().toString();
     }
 
     /** 标准的合法授权请求参数（可按需覆盖或删改某项来构造异常场景）。 */
@@ -2923,14 +2928,32 @@ public final class OAuth2TestFlows {
                 .getContentAsString(StandardCharsets.UTF_8);
     }
 
-    /** 从令牌响应中取出某个字符串字段的值。 */
+    /**
+     * 从令牌响应中取出某个字段的值。用 Jackson 而非字符串查找：
+     * 后者只能取带引号的字符串字段，遇到数字/布尔字段会误报「字段不存在」，
+     * 把后续任务的排查方向带偏。
+     */
     public static String jsonField(String json, String field) {
-        String marker = "\"" + field + "\":\"";
-        int start = json.indexOf(marker);
-        assertThat(start).as("响应中应包含字段 %s", field).isGreaterThanOrEqualTo(0);
-        start += marker.length();
-        int end = json.indexOf('"', start);
-        return json.substring(start, end);
+        try {
+            JsonNode node = OBJECT_MAPPER.readTree(json).path(field);
+            assertThat(node.isMissingNode()).as("响应中应包含字段 %s", field).isFalse();
+            return node.asText();
+        }
+        catch (JsonProcessingException ex) {
+            throw new AssertionError("令牌响应不是合法 JSON：" + json, ex);
+        }
+    }
+
+    /** 用 refresh token 换一组新令牌，返回响应 JSON 原文。 */
+    public static String refreshTokens(MockMvc mockMvc, String refreshToken) throws Exception {
+        return mockMvc.perform(post("/oauth2/token")
+                        .param("grant_type", "refresh_token")
+                        .param("client_id", CLIENT_ID)
+                        .param("refresh_token", refreshToken))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString(StandardCharsets.UTF_8);
     }
 
     private static String queryParam(String url, String name) {
@@ -3018,6 +3041,25 @@ class JwtClaimsConfigTest {
     }
 
     @Test
+    void refreshedAccessTokenKeepsUserIdSubjectAndEmail() throws Exception {
+        // 刷新令牌重新签发 access token 时同样走 customizer——这条分支若失守，
+        // 用户在续期后会拿到 sub 为邮箱的令牌，产品侧的外键关联当场断裂
+        String email = "claims-refresh@example.com";
+        AppUser user = registrationService.register(email, PASSWORD);
+
+        String first = OAuth2TestFlows.exchangeCode(mockMvc,
+                OAuth2TestFlows.authorizeAndExtractCode(mockMvc,
+                        OAuth2TestFlows.login(mockMvc, email, PASSWORD)));
+        String refreshed = OAuth2TestFlows.refreshTokens(mockMvc,
+                OAuth2TestFlows.jsonField(first, "refresh_token"));
+
+        Jwt jwt = jwtDecoder.decode(OAuth2TestFlows.jsonField(refreshed, "access_token"));
+
+        assertThat(jwt.getSubject()).isEqualTo(user.getId().toString());
+        assertThat(jwt.getClaimAsString("email")).isEqualTo(email);
+    }
+
+    @Test
     void idTokenSubjectMatchesAccessTokenSubject() throws Exception {
         String email = "claims-idtoken@example.com";
         AppUser user = registrationService.register(email, PASSWORD);
@@ -3086,6 +3128,10 @@ public class JwtClaimsConfig {
                 return;
             }
 
+            // 注意：刷新令牌授权时 principal 是首次登录时序列化进 oauth2_authorization 表的
+            // 快照，最长可在 refresh token 的 30 天寿命内被反复复用。因此这里的查找 key 是
+            // 「登录时刻的邮箱」而非当前邮箱——将来实现「修改邮箱」功能时必须同步处理这里
+            // （改完邮箱后旧 refresh token 会查不到人），否则表现为改邮箱即被强制登出。
             AppUser user = userService.findByEmail(new EmailAddress(context.getPrincipal().getName()))
                     .orElseThrow(() -> new IllegalStateException("签发令牌时找不到对应用户"));
 
@@ -3099,7 +3145,7 @@ public class JwtClaimsConfig {
 - [ ] **Step 5: 运行测试确认通过**
 
 Run: `cd auth-server && ./mvnw test -Dtest=JwtClaimsConfigTest`
-Expected: PASS，4 个测试全部通过
+Expected: PASS，5 个测试全部通过
 
 - [ ] **Step 6: 运行全部测试**
 
