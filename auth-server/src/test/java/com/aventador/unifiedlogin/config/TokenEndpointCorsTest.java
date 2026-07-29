@@ -17,6 +17,10 @@ import static com.aventador.unifiedlogin.support.OAuth2TestFlows.CLIENT_ID;
 import static com.aventador.unifiedlogin.support.OAuth2TestFlows.CODE_VERIFIER;
 import static com.aventador.unifiedlogin.support.OAuth2TestFlows.REDIRECT_URI;
 import static com.aventador.unifiedlogin.support.OAuth2TestFlows.authorizeAndExtractCode;
+import static com.aventador.unifiedlogin.support.OAuth2TestFlows.authorizeUri;
+import static com.aventador.unifiedlogin.support.OAuth2TestFlows.validAuthorizeParams;
+import static org.hamcrest.Matchers.containsString;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.options;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
@@ -92,8 +96,62 @@ class TokenEndpointCorsTest {
                         .header(HttpHeaders.ACCESS_CONTROL_REQUEST_METHOD, "POST"))
                 .andExpect(status().isOk())
                 .andExpect(header().string("Access-Control-Allow-Origin", REGISTERED_ORIGIN))
-                .andExpect(header().string("Access-Control-Allow-Methods",
-                        org.hamcrest.Matchers.containsString("POST")));
+                .andExpect(header().string("Access-Control-Allow-Methods", containsString("POST")));
+    }
+
+    /**
+     * 跨域放行只挂在令牌端点上，不能顺手铺到整个授权服务器。
+     *
+     * <p>同时断言授权端点本身照常工作：只把映射从令牌端点改成 {@code /**} 时，
+     * 放行方法仍是 POST，浏览器带 Origin 发来的 GET 会被跨域处理器判为 403 直接拒掉——
+     * 那样授权端点在浏览器里就废了。两条断言各守一半，缺一条都会放过一种改法。
+     */
+    @Test
+    void otherAuthorizationServerEndpointsAreNotOpenedForCrossOrigin() throws Exception {
+        mockMvc.perform(get(authorizeUri(validAuthorizeParams()))
+                        .header(HttpHeaders.ORIGIN, REGISTERED_ORIGIN)
+                        .session(session))
+                .andExpect(status().is3xxRedirection())
+                .andExpect(header().doesNotExist("Access-Control-Allow-Origin"));
+    }
+
+    /**
+     * 请求头白名单只有 Content-Type。放宽成 {@code *} 时，第二条断言会变绿——
+     * 所以真正守住收窄的是「没登记的请求头必须过不了预检」这一条。
+     */
+    @Test
+    void preflightOnlyAllowsContentTypeHeader() throws Exception {
+        mockMvc.perform(options(TOKEN_ENDPOINT)
+                        .header(HttpHeaders.ORIGIN, REGISTERED_ORIGIN)
+                        .header(HttpHeaders.ACCESS_CONTROL_REQUEST_METHOD, "POST")
+                        .header(HttpHeaders.ACCESS_CONTROL_REQUEST_HEADERS, HttpHeaders.CONTENT_TYPE))
+                .andExpect(status().isOk())
+                .andExpect(header().string("Access-Control-Allow-Headers", HttpHeaders.CONTENT_TYPE));
+
+        mockMvc.perform(options(TOKEN_ENDPOINT)
+                        .header(HttpHeaders.ORIGIN, REGISTERED_ORIGIN)
+                        .header(HttpHeaders.ACCESS_CONTROL_REQUEST_METHOD, "POST")
+                        .header(HttpHeaders.ACCESS_CONTROL_REQUEST_HEADERS, "X-Unlisted-Header"))
+                .andExpect(header().doesNotExist("Access-Control-Allow-Origin"));
+    }
+
+    /**
+     * 不放行凭据。一旦放行，浏览器就会把认证中心的会话 Cookie 一并带上跨域请求，
+     * 令牌端点从「谁都能调、靠 PKCE 保安全」变成「带着受害者会话被调」，等于开出 CSRF 面。
+     */
+    @Test
+    void tokenResponseDoesNotAllowCredentials() throws Exception {
+        String code = authorizeAndExtractCode(mockMvc, session);
+
+        mockMvc.perform(post(TOKEN_ENDPOINT)
+                        .header(HttpHeaders.ORIGIN, REGISTERED_ORIGIN)
+                        .param("grant_type", "authorization_code")
+                        .param("client_id", CLIENT_ID)
+                        .param("code", code)
+                        .param("redirect_uri", REDIRECT_URI)
+                        .param("code_verifier", CODE_VERIFIER))
+                .andExpect(status().isOk())
+                .andExpect(header().doesNotExist("Access-Control-Allow-Credentials"));
     }
 
     /** 没登记过的源必须拿不到放行头，否则任意站点都能在受害者浏览器里替他换令牌。 */
