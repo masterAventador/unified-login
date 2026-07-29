@@ -472,6 +472,13 @@ class EmailAddressTest {
     }
 
     @Test
+    void acceptsEmailOfExactlyMaxLength() {
+        // 边界正向锁定：若长度判断被误改为 >=，此用例失败
+        String local = "a".repeat(EmailAddress.MAX_LENGTH - "@example.com".length());
+        assertThat(new EmailAddress(local + "@example.com").value()).hasSize(EmailAddress.MAX_LENGTH);
+    }
+
+    @Test
     void acceptsPlusAddressing() {
         assertThat(new EmailAddress("user+tag@example.com").value()).isEqualTo("user+tag@example.com");
     }
@@ -529,9 +536,7 @@ public record EmailAddress(String value) {
     private static final Pattern PATTERN = Pattern.compile("^[^@\\s]+@[^@\\s.]+(\\.[^@\\s.]+)+$");
 
     public EmailAddress {
-        if (value == null) {
-            throw new InvalidEmailException("邮箱不能为空");
-        }
+        // normalize 已把 null 归一为空串，isEmpty 分支同时覆盖 null 与空白输入
         value = normalize(value);
         if (value.isEmpty()) {
             throw new InvalidEmailException("邮箱不能为空");
@@ -558,7 +563,7 @@ public record EmailAddress(String value) {
 - [ ] **Step 5: 运行测试确认通过**
 
 Run: `cd auth-server && ./mvnw test -Dtest=EmailAddressTest`
-Expected: PASS，12 个测试全部通过
+Expected: PASS，13 个测试全部通过
 
 - [ ] **Step 6: 提交**
 
