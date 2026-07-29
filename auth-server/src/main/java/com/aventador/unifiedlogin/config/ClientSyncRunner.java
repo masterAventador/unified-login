@@ -15,6 +15,8 @@ import org.springframework.security.oauth2.server.authorization.settings.ClientS
 import org.springframework.security.oauth2.server.authorization.settings.TokenSettings;
 
 import java.time.Duration;
+import java.util.List;
+import java.util.Objects;
 import java.util.UUID;
 
 @Configuration
@@ -29,11 +31,19 @@ public class ClientSyncRunner {
         return new JdbcRegisteredClientRepository(jdbcTemplate);
     }
 
+    /**
+     * 幂等同步：已存在的 client 沿用原 id 重建后 save（save 以 id 为主键更新）。
+     * 注意：配置中移除某个 client 不会删除库中已注册的行及其回调白名单，
+     * 需手动清理——与 bootstrap.admin-emails 的撤销语义一致。
+     */
     @Bean
     public ApplicationRunner syncRegisteredClients(RegisteredClientRepository repository,
                                                    UnifiedLoginProperties properties) {
         return (args) -> {
-            for (UnifiedLoginProperties.ClientConfig config : properties.clients()) {
+            // record 构造器绑定在配置节点缺失时得到 null 而非空列表，这里显式归一
+            List<UnifiedLoginProperties.ClientConfig> clients =
+                    Objects.requireNonNullElseGet(properties.clients(), List::of);
+            for (UnifiedLoginProperties.ClientConfig config : clients) {
                 RegisteredClient existing = repository.findByClientId(config.clientId());
                 String id = (existing != null) ? existing.getId() : UUID.randomUUID().toString();
                 repository.save(build(id, config));
@@ -59,7 +69,11 @@ public class ClientSyncRunner {
                         .reuseRefreshTokens(false)
                         .build());
 
-        config.redirectUris().forEach(builder::redirectUri);
+        List<String> redirectUris = config.redirectUris();
+        if (redirectUris == null || redirectUris.isEmpty()) {
+            throw new IllegalStateException("客户端 " + config.clientId() + " 未配置 redirect-uris，回调白名单不能为空");
+        }
+        redirectUris.forEach(builder::redirectUri);
 
         return builder.build();
     }

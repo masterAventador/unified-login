@@ -3,8 +3,11 @@ package com.aventador.unifiedlogin.config;
 import com.aventador.unifiedlogin.PostgresTestConfig;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.boot.ApplicationRunner;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.oauth2.core.AuthorizationGrantType;
 import org.springframework.security.oauth2.core.ClientAuthenticationMethod;
 import org.springframework.security.oauth2.server.authorization.client.RegisteredClient;
@@ -20,6 +23,13 @@ class ClientSyncRunnerTest {
 
     @Autowired
     private RegisteredClientRepository registeredClientRepository;
+
+    @Autowired
+    @Qualifier("syncRegisteredClients")
+    private ApplicationRunner syncRunner;
+
+    @Autowired
+    private JdbcTemplate jdbcTemplate;
 
     @Test
     void demoWebAIsRegisteredFromConfiguration() {
@@ -59,5 +69,19 @@ class ClientSyncRunnerTest {
     @Test
     void unknownClientIsNotRegistered() {
         assertThat(registeredClientRepository.findByClientId("never-configured")).isNull();
+    }
+
+    @Test
+    void syncIsIdempotentAcrossRestarts() throws Exception {
+        RegisteredClient before = registeredClientRepository.findByClientId("demo-web-a");
+
+        // 手动再执行一次启动同步，模拟应用重启（上下文缓存不会自动重跑 ApplicationRunner）
+        syncRunner.run(null);
+
+        RegisteredClient after = registeredClientRepository.findByClientId("demo-web-a");
+        assertThat(after.getId()).isEqualTo(before.getId());
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM oauth2_registered_client WHERE client_id = 'demo-web-a'",
+                Integer.class)).isEqualTo(1);
     }
 }
