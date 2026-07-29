@@ -1990,8 +1990,11 @@ package com.aventador.unifiedlogin.config;
 import com.aventador.unifiedlogin.PostgresTestConfig;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.boot.ApplicationRunner;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.oauth2.core.AuthorizationGrantType;
 import org.springframework.security.oauth2.core.ClientAuthenticationMethod;
 import org.springframework.security.oauth2.server.authorization.client.RegisteredClient;
@@ -2007,6 +2010,13 @@ class ClientSyncRunnerTest {
 
     @Autowired
     private RegisteredClientRepository registeredClientRepository;
+
+    @Autowired
+    @Qualifier("syncRegisteredClients")
+    private ApplicationRunner syncRunner;
+
+    @Autowired
+    private JdbcTemplate jdbcTemplate;
 
     @Test
     void demoWebAIsRegisteredFromConfiguration() {
@@ -2046,6 +2056,20 @@ class ClientSyncRunnerTest {
     @Test
     void unknownClientIsNotRegistered() {
         assertThat(registeredClientRepository.findByClientId("never-configured")).isNull();
+    }
+
+    @Test
+    void syncIsIdempotentAcrossRestarts() throws Exception {
+        RegisteredClient before = registeredClientRepository.findByClientId("demo-web-a");
+
+        // 手动再执行一次启动同步，模拟应用重启（上下文缓存不会自动重跑 ApplicationRunner）
+        syncRunner.run(null);
+
+        RegisteredClient after = registeredClientRepository.findByClientId("demo-web-a");
+        assertThat(after.getId()).isEqualTo(before.getId());
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM oauth2_registered_client WHERE client_id = 'demo-web-a'",
+                Integer.class)).isEqualTo(1);
     }
 }
 ```
@@ -2178,6 +2202,8 @@ import org.springframework.security.oauth2.server.authorization.settings.ClientS
 import org.springframework.security.oauth2.server.authorization.settings.TokenSettings;
 
 import java.time.Duration;
+import java.util.List;
+import java.util.Objects;
 import java.util.UUID;
 
 @Configuration
@@ -2192,11 +2218,19 @@ public class ClientSyncRunner {
         return new JdbcRegisteredClientRepository(jdbcTemplate);
     }
 
+    /**
+     * 幂等同步：已存在的 client 沿用原 id 重建后 save（save 以 id 为主键更新）。
+     * 注意：配置中移除某个 client 不会删除库中已注册的行及其回调白名单，
+     * 需手动清理——与 bootstrap.admin-emails 的撤销语义一致。
+     */
     @Bean
     public ApplicationRunner syncRegisteredClients(RegisteredClientRepository repository,
                                                    UnifiedLoginProperties properties) {
         return (args) -> {
-            for (UnifiedLoginProperties.ClientConfig config : properties.clients()) {
+            // record 构造器绑定在配置节点缺失时得到 null 而非空列表，这里显式归一
+            List<UnifiedLoginProperties.ClientConfig> clients =
+                    Objects.requireNonNullElseGet(properties.clients(), List::of);
+            for (UnifiedLoginProperties.ClientConfig config : clients) {
                 RegisteredClient existing = repository.findByClientId(config.clientId());
                 String id = (existing != null) ? existing.getId() : UUID.randomUUID().toString();
                 repository.save(build(id, config));
@@ -2222,7 +2256,11 @@ public class ClientSyncRunner {
                         .reuseRefreshTokens(false)
                         .build());
 
-        config.redirectUris().forEach(builder::redirectUri);
+        List<String> redirectUris = config.redirectUris();
+        if (redirectUris == null || redirectUris.isEmpty()) {
+            throw new IllegalStateException("客户端 " + config.clientId() + " 未配置 redirect-uris，回调白名单不能为空");
+        }
+        redirectUris.forEach(builder::redirectUri);
 
         return builder.build();
     }
@@ -2232,12 +2270,13 @@ public class ClientSyncRunner {
 - [ ] **Step 7: 运行测试确认通过**
 
 Run: `cd auth-server && ./mvnw test -Dtest=ClientSyncRunnerTest`
-Expected: PASS，5 个测试全部通过
+Expected: PASS，6 个测试全部通过
 
-- [ ] **Step 8: 验证重复启动不会报错**
+- [ ] **Step 8: 幂等性由 syncIsIdempotentAcrossRestarts 用例直接验证**
 
-Run: `cd auth-server && ./mvnw test -Dtest=ClientSyncRunnerTest -Dsurefire.rerunFailingTestsCount=1`
-Expected: PASS。此步验证同步逻辑幂等——同一 client 第二次同步走的是「沿用已有 id 更新」而非插入
+该用例手动第二次执行同步 Runner，断言同一 client_id 的 id 不变且表中仅一行。
+（注意：`-Dsurefire.rerunFailingTestsCount` **不能**用于验证幂等——它只在测试失败时重跑，
+且 Spring 上下文缓存下 ApplicationRunner 不会随重跑再次执行。）
 
 - [ ] **Step 9: 提交**
 
