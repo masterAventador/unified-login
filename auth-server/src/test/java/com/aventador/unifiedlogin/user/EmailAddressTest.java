@@ -55,6 +55,13 @@ class EmailAddressTest {
     }
 
     @Test
+    void acceptsEmailOfExactlyMaxLength() {
+        // 边界正向锁定：若长度判断被误改为 >=，此用例失败
+        String local = "a".repeat(EmailAddress.MAX_LENGTH - "@example.com".length());
+        assertThat(new EmailAddress(local + "@example.com").value()).hasSize(EmailAddress.MAX_LENGTH);
+    }
+
+    @Test
     void acceptsPlusAddressing() {
         assertThat(new EmailAddress("user+tag@example.com").value()).isEqualTo("user+tag@example.com");
     }

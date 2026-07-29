@@ -10,9 +10,7 @@ public record EmailAddress(String value) {
     private static final Pattern PATTERN = Pattern.compile("^[^@\\s]+@[^@\\s.]+(\\.[^@\\s.]+)+$");
 
     public EmailAddress {
-        if (value == null) {
-            throw new InvalidEmailException("邮箱不能为空");
-        }
+        // normalize 已把 null 归一为空串，isEmpty 分支同时覆盖 null 与空白输入
         value = normalize(value);
         if (value.isEmpty()) {
             throw new InvalidEmailException("邮箱不能为空");
