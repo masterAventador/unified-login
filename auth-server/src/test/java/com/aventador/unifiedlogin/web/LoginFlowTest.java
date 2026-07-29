@@ -11,12 +11,13 @@ import org.springframework.test.web.servlet.MockMvc;
 
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestBuilders.formLogin;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
+import static org.springframework.security.test.web.servlet.response.SecurityMockMvcResultMatchers.authenticated;
+import static org.springframework.security.test.web.servlet.response.SecurityMockMvcResultMatchers.unauthenticated;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.redirectedUrl;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.view;
-import static org.assertj.core.api.Assertions.assertThat;
 
 @SpringBootTest
 @AutoConfigureMockMvc
@@ -41,7 +42,7 @@ class LoginFlowTest {
         registrationService.register("login-ok@example.com", "a valid password");
 
         mockMvc.perform(formLogin("/login").user("login-ok@example.com").password("a valid password"))
-                .andExpect(status().is3xxRedirection());
+                .andExpect(authenticated());
     }
 
     @Test
@@ -49,7 +50,7 @@ class LoginFlowTest {
         registrationService.register("login-case@example.com", "a valid password");
 
         mockMvc.perform(formLogin("/login").user("Login-Case@Example.COM").password("a valid password"))
-                .andExpect(status().is3xxRedirection());
+                .andExpect(authenticated());
     }
 
     @Test
@@ -59,7 +60,7 @@ class LoginFlowTest {
         mockMvc.perform(post("/login").with(csrf())
                         .param("username", "login-bad@example.com")
                         .param("password", "wrong password"))
-                .andExpect(status().is3xxRedirection())
+                .andExpect(unauthenticated())
                 .andExpect(redirectedUrl("/login?error"));
     }
 
@@ -68,7 +69,7 @@ class LoginFlowTest {
         mockMvc.perform(post("/login").with(csrf())
                         .param("username", "ghost@example.com")
                         .param("password", "a valid password"))
-                .andExpect(status().is3xxRedirection())
+                .andExpect(unauthenticated())
                 .andExpect(redirectedUrl("/login?error"));
     }
 
