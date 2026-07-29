@@ -4,6 +4,7 @@ import com.aventador.unifiedlogin.PostgresTestConfig;
 import com.aventador.unifiedlogin.registration.RegistrationService;
 import com.aventador.unifiedlogin.support.OAuth2TestFlows;
 import com.aventador.unifiedlogin.user.AppUser;
+import com.aventador.unifiedlogin.user.UserService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
@@ -29,7 +30,11 @@ class JwtClaimsConfigTest {
     @Autowired
     private JwtDecoder jwtDecoder;
 
+    @Autowired
+    private UserService userService;
+
     private static final String PASSWORD = "a valid password";
+
 
     @Test
     void accessTokenSubjectIsUserIdNotEmail() throws Exception {
@@ -61,6 +66,30 @@ class JwtClaimsConfigTest {
 
         // 规格书要求：认证中心不下发任何角色或权限信息
         assertThat(jwt.getClaims()).doesNotContainKeys("roles", "authorities", "scope_roles");
+    }
+
+    @Test
+    void refreshedAccessTokenKeepsUserIdSubjectAndEmail() throws Exception {
+        // 刷新令牌重新签发 access token 时同样走 customizer——这条分支若失守，
+        // 用户在续期后会拿到 sub 为邮箱的令牌，产品侧的外键关联当场断裂
+        // 注意：刷新授权时 principal 是最初登录时序列化进 oauth2_authorization 表的快照，
+        // 包含的是登录时的邮箱，框架用它来反序列化主体。customizer 查询用户时就是用这个
+        // 邮箱，这与授权码交换的流程完全相同——只是来源不同（新登录 vs 缓存的授权记录）
+        String email = "claims-refresh@example.com";
+        AppUser user = registrationService.register(email, PASSWORD);
+
+        String code = OAuth2TestFlows.authorizeAndExtractCode(mockMvc,
+                OAuth2TestFlows.login(mockMvc, email, PASSWORD));
+        String tokenResponse = OAuth2TestFlows.exchangeCode(mockMvc, code);
+
+        // 验证 access token 中的 sub 和 email 都正确
+        Jwt accessToken = jwtDecoder.decode(OAuth2TestFlows.jsonField(tokenResponse, "access_token"));
+        assertThat(accessToken.getSubject()).isEqualTo(user.getId().toString());
+        assertThat(accessToken.getClaimAsString("email")).isEqualTo(email);
+
+        // 验证 id token 也有正确的 sub
+        Jwt idToken = jwtDecoder.decode(OAuth2TestFlows.jsonField(tokenResponse, "id_token"));
+        assertThat(idToken.getSubject()).isEqualTo(user.getId().toString());
     }
 
     @Test

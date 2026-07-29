@@ -1,16 +1,26 @@
 package com.aventador.unifiedlogin.support;
 
 import org.springframework.mock.web.MockHttpSession;
+import org.springframework.security.oauth2.core.AuthorizationGrantType;
+import org.springframework.security.oauth2.core.ClientAuthenticationMethod;
+import org.springframework.security.oauth2.core.oidc.OidcScopes;
+import org.springframework.security.oauth2.server.authorization.client.RegisteredClient;
+import org.springframework.security.oauth2.server.authorization.client.RegisteredClientRepository;
+import org.springframework.security.oauth2.server.authorization.settings.ClientSettings;
+import org.springframework.security.oauth2.server.authorization.settings.TokenSettings;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
-
 import org.springframework.web.util.UriComponentsBuilder;
 
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.UUID;
+import java.util.regex.Pattern;
+import java.util.regex.Matcher;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestBuilders.formLogin;
@@ -35,11 +45,11 @@ public final class OAuth2TestFlows {
      * 用 .param() 会让参数被整批丢弃、端点报 invalid_request。
      */
     public static String authorizeUri(Map<String, String> params) {
-        var builder = UriComponentsBuilder.fromPath("/oauth2/authorize");
-        for (var entry : params.entrySet()) {
-            builder.queryParam(entry.getKey(), entry.getValue());
-        }
-        return builder.build().toString();
+        UriComponentsBuilder builder = UriComponentsBuilder.fromPath("/oauth2/authorize");
+        params.forEach(builder::queryParam);
+        // 必须 encode()：Task 10 会构造含特殊字符的非法参数来测边界，
+        // 不编码时这些字符会破坏查询串结构，失败现象与测试意图无关、极难排查
+        return builder.build().encode().toString();
     }
 
     /** 标准的合法授权请求参数（可按需覆盖或删改某项来构造异常场景）。 */
@@ -98,14 +108,51 @@ public final class OAuth2TestFlows {
                 .getContentAsString(StandardCharsets.UTF_8);
     }
 
-    /** 从令牌响应中取出某个字符串字段的值。 */
+    /**
+     * 从令牌响应中取出某个字段的值。支持字符串/数字/布尔字段。
+     */
     public static String jsonField(String json, String field) {
-        String marker = "\"" + field + "\":\"";
-        int start = json.indexOf(marker);
-        assertThat(start).as("响应中应包含字段 %s", field).isGreaterThanOrEqualTo(0);
-        start += marker.length();
-        int end = json.indexOf('"', start);
-        return json.substring(start, end);
+        String pattern = "\"" + field + "\":";
+        int idx = json.indexOf(pattern);
+        assertThat(idx).as("响应中应包含字段 %s", field).isGreaterThanOrEqualTo(0);
+
+        int valueStart = idx + pattern.length();
+        // 跳过空格
+        while (valueStart < json.length() && Character.isWhitespace(json.charAt(valueStart))) {
+            valueStart++;
+        }
+
+        char firstChar = json.charAt(valueStart);
+        if (firstChar == '"') {
+            // 字符串值：找到闭合引号
+            int endIndex = valueStart + 1;
+            while (endIndex < json.length()) {
+                if (json.charAt(endIndex) == '"' && (endIndex == 0 || json.charAt(endIndex - 1) != '\\')) {
+                    return json.substring(valueStart + 1, endIndex);
+                }
+                endIndex++;
+            }
+            throw new AssertionError("字段 " + field + " 的字符串值没有闭合引号");
+        } else {
+            // 非字符串值：提取直到逗号或右花括号
+            int endIndex = valueStart;
+            while (endIndex < json.length() && json.charAt(endIndex) != ',' && json.charAt(endIndex) != '}') {
+                endIndex++;
+            }
+            return json.substring(valueStart, endIndex).trim();
+        }
+    }
+
+    /** 用 refresh token 换一组新令牌，返回响应 JSON 原文。 */
+    public static String refreshTokens(MockMvc mockMvc, String refreshToken) throws Exception {
+        return mockMvc.perform(post("/oauth2/token")
+                        .param("grant_type", "refresh_token")
+                        .param("client_id", CLIENT_ID)
+                        .param("refresh_token", refreshToken))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString(StandardCharsets.UTF_8);
     }
 
     private static String queryParam(String url, String name) {
