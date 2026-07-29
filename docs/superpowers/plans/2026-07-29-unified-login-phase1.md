@@ -21,6 +21,10 @@
   - `org.springframework.security.config.annotation.web.configurers.oauth2.server.authorization.OAuth2AuthorizationServerConfigurer`
   - `org.springframework.security.config.annotation.web.configuration.OAuth2AuthorizationServerConfiguration`
   - 其余类（`RegisteredClient`、`AuthorizationServerSettings`、`JdbcRegisteredClientRepository`、`JdbcOAuth2AuthorizationService`）包路径**未变**，仍在 `org.springframework.security.oauth2.server.authorization.*` 下。
+- **⚠ 测试授权码流程必须走真实表单登录，不能用 `.with(user(...))`**：Spring Security 7
+  签发 token 时要从主体的 `FactorGrantedAuthority` 推导认证时间，而 `.with(user(...))`
+  造的主体没有该 authority，会抛 `authenticationTime cannot be null`。用
+  `OAuth2TestFlows.login(...)` 拿到会话再 `.session(session)` 调授权端点。
 - **⚠ `@DynamicPropertySource` 只在测试类中生效**：放在 `@TestConfiguration`/`@Configuration`
   类里会被**静默忽略**——属性没被覆盖、测试照常通过，缺陷完全不可见。要在配置类里注册
   动态属性，用 `@Bean DynamicPropertyRegistrar`（Spring Framework 7 提供）。
@@ -2822,6 +2826,7 @@ git commit -m "feat(config): 启用 OIDC 协议端点并持久化签名密钥
 ```java
 package com.aventador.unifiedlogin.support;
 
+import org.springframework.mock.web.MockHttpSession;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 
@@ -2834,7 +2839,8 @@ import java.util.Map;
 import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestBuilders.formLogin;
+import static org.springframework.security.test.web.servlet.response.SecurityMockMvcResultMatchers.authenticated;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -2873,10 +2879,27 @@ public final class OAuth2TestFlows {
         return params;
     }
 
-    /** 以已登录用户身份走一次授权端点，返回回调地址中的一次性授权码。 */
-    public static String authorizeAndExtractCode(MockMvc mockMvc, String userEmail) throws Exception {
+    /**
+     * 走真实表单登录并返回会话。
+     *
+     * **不能用 `.with(user(...))` 替代**：那样造出的主体缺少 Spring Security 7 的
+     * FactorGrantedAuthority，而框架签发 token 时要从它推导认证时间，
+     * 会抛 "authenticationTime cannot be null"。必须走真实登录链路。
+     */
+    public static MockHttpSession login(MockMvc mockMvc, String email, String rawPassword) throws Exception {
+        MvcResult result = mockMvc.perform(formLogin("/login").user(email).password(rawPassword))
+                .andExpect(authenticated())
+                .andReturn();
+
+        MockHttpSession session = (MockHttpSession) result.getRequest().getSession(false);
+        assertThat(session).as("登录后应存在会话").isNotNull();
+        return session;
+    }
+
+    /** 以已登录会话走一次授权端点，返回回调地址中的一次性授权码。 */
+    public static String authorizeAndExtractCode(MockMvc mockMvc, MockHttpSession session) throws Exception {
         MvcResult result = mockMvc.perform(get(authorizeUri(validAuthorizeParams()))
-                        .with(user(userEmail)))
+                        .session(session))
                 .andExpect(status().is3xxRedirection())
                 .andReturn();
 
@@ -2960,10 +2983,12 @@ class JwtClaimsConfigTest {
     @Autowired
     private JwtDecoder jwtDecoder;
 
+    private static final String PASSWORD = "a valid password";
+
     @Test
     void accessTokenSubjectIsUserIdNotEmail() throws Exception {
         String email = "claims-sub@example.com";
-        AppUser user = registrationService.register(email, "a valid password");
+        AppUser user = registrationService.register(email, PASSWORD);
 
         Jwt jwt = decodeAccessToken(email);
 
@@ -2974,7 +2999,7 @@ class JwtClaimsConfigTest {
     @Test
     void accessTokenCarriesEmailClaim() throws Exception {
         String email = "claims-email@example.com";
-        registrationService.register(email, "a valid password");
+        registrationService.register(email, PASSWORD);
 
         Jwt jwt = decodeAccessToken(email);
 
@@ -2984,7 +3009,7 @@ class JwtClaimsConfigTest {
     @Test
     void accessTokenCarriesNoRoleOrAuthorityClaim() throws Exception {
         String email = "claims-noroles@example.com";
-        registrationService.register(email, "a valid password");
+        registrationService.register(email, PASSWORD);
 
         Jwt jwt = decodeAccessToken(email);
 
@@ -2995,10 +3020,11 @@ class JwtClaimsConfigTest {
     @Test
     void idTokenSubjectMatchesAccessTokenSubject() throws Exception {
         String email = "claims-idtoken@example.com";
-        AppUser user = registrationService.register(email, "a valid password");
+        AppUser user = registrationService.register(email, PASSWORD);
 
         String tokenResponse = OAuth2TestFlows.exchangeCode(mockMvc,
-                OAuth2TestFlows.authorizeAndExtractCode(mockMvc, email));
+                OAuth2TestFlows.authorizeAndExtractCode(mockMvc,
+                        OAuth2TestFlows.login(mockMvc, email, PASSWORD)));
 
         Jwt idToken = jwtDecoder.decode(OAuth2TestFlows.jsonField(tokenResponse, "id_token"));
 
@@ -3006,8 +3032,11 @@ class JwtClaimsConfigTest {
     }
 
     private Jwt decodeAccessToken(String email) throws Exception {
+        // 必须真实登录：.with(user(...)) 造的主体没有 FactorGrantedAuthority，
+        // 框架推导不出认证时间会直接抛异常
         String tokenResponse = OAuth2TestFlows.exchangeCode(mockMvc,
-                OAuth2TestFlows.authorizeAndExtractCode(mockMvc, email));
+                OAuth2TestFlows.authorizeAndExtractCode(mockMvc,
+                        OAuth2TestFlows.login(mockMvc, email, PASSWORD)));
 
         return jwtDecoder.decode(OAuth2TestFlows.jsonField(tokenResponse, "access_token"));
     }
@@ -3115,8 +3144,11 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
+import org.springframework.mock.web.MockHttpSession;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
+
+import com.aventador.unifiedlogin.support.OAuth2TestFlows;
 
 import java.util.Map;
 
@@ -3129,7 +3161,6 @@ import static com.aventador.unifiedlogin.support.OAuth2TestFlows.validAuthorizeP
 import static com.aventador.unifiedlogin.support.OAuth2TestFlows.exchangeCode;
 import static com.aventador.unifiedlogin.support.OAuth2TestFlows.jsonField;
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -3148,16 +3179,23 @@ class AuthorizationCodeFlowTest {
     @Autowired
     private RegistrationService registrationService;
 
+    private static final String PASSWORD = "a valid password";
+
+    private MockHttpSession session;
+
     @BeforeEach
-    void createUser() {
+    void createUserAndLogin() throws Exception {
         if (!registrationService.isEmailTaken(USER_EMAIL)) {
-            registrationService.register(USER_EMAIL, "a valid password");
+            registrationService.register(USER_EMAIL, PASSWORD);
         }
+        // 走真实登录：.with(user(...)) 的主体缺少 FactorGrantedAuthority，
+        // 框架签发 token 时推导不出认证时间会直接抛异常
+        session = OAuth2TestFlows.login(mockMvc, USER_EMAIL, PASSWORD);
     }
 
     @Test
     void authenticatedUserExchangesCodeForTokens() throws Exception {
-        String code = authorizeAndExtractCode(mockMvc, USER_EMAIL);
+        String code = authorizeAndExtractCode(mockMvc, session);
 
         mockMvc.perform(post("/oauth2/token")
                         .param("grant_type", "authorization_code")
@@ -3174,7 +3212,7 @@ class AuthorizationCodeFlowTest {
 
     @Test
     void tokenRequestWithWrongVerifierIsRejected() throws Exception {
-        String code = authorizeAndExtractCode(mockMvc, USER_EMAIL);
+        String code = authorizeAndExtractCode(mockMvc, session);
 
         mockMvc.perform(post("/oauth2/token")
                         .param("grant_type", "authorization_code")
@@ -3187,7 +3225,7 @@ class AuthorizationCodeFlowTest {
 
     @Test
     void authorizationCodeCannotBeUsedTwice() throws Exception {
-        String code = authorizeAndExtractCode(mockMvc, USER_EMAIL);
+        String code = authorizeAndExtractCode(mockMvc, session);
 
         exchangeCode(mockMvc, code);
 
@@ -3206,7 +3244,7 @@ class AuthorizationCodeFlowTest {
         params.remove("code_challenge");
         params.remove("code_challenge_method");
 
-        mockMvc.perform(get(authorizeUri(params)).with(user(USER_EMAIL)))
+        mockMvc.perform(get(authorizeUri(params)).session(session))
                 .andExpect(status().isBadRequest());
     }
 
@@ -3215,7 +3253,7 @@ class AuthorizationCodeFlowTest {
         Map<String, String> params = validAuthorizeParams();
         params.put("redirect_uri", "https://attacker.example.com/steal");
 
-        MvcResult result = mockMvc.perform(get(authorizeUri(params)).with(user(USER_EMAIL)))
+        MvcResult result = mockMvc.perform(get(authorizeUri(params)).session(session))
                 .andExpect(status().isBadRequest())
                 .andReturn();
 
@@ -3226,7 +3264,7 @@ class AuthorizationCodeFlowTest {
     @Test
     void userinfoReturnsSubjectWithValidAccessToken() throws Exception {
         // Task 8 只验证了「无 token 得 401」；这里补上正向链路：带合法 token 得 200
-        String tokenResponse = exchangeCode(mockMvc, authorizeAndExtractCode(mockMvc, USER_EMAIL));
+        String tokenResponse = exchangeCode(mockMvc, authorizeAndExtractCode(mockMvc, session));
         String accessToken = jsonField(tokenResponse, "access_token");
 
         mockMvc.perform(get("/userinfo").header("Authorization", "Bearer " + accessToken))
@@ -3236,7 +3274,7 @@ class AuthorizationCodeFlowTest {
 
     @Test
     void refreshTokenRotatesAndOldOneIsRejected() throws Exception {
-        String tokenResponse = exchangeCode(mockMvc, authorizeAndExtractCode(mockMvc, USER_EMAIL));
+        String tokenResponse = exchangeCode(mockMvc, authorizeAndExtractCode(mockMvc, session));
         String firstRefreshToken = jsonField(tokenResponse, "refresh_token");
 
         mockMvc.perform(post("/oauth2/token")
