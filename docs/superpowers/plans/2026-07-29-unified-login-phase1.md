@@ -2318,10 +2318,13 @@ import com.nimbusds.jose.jwk.RSAKey;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermissions;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 class RsaKeyProviderTest {
 
@@ -2355,6 +2358,18 @@ class RsaKeyProviderTest {
 
         assertThat(Files.exists(keyFile)).isTrue();
     }
+
+    @Test
+    void keyFileIsReadableOnlyByOwner(@TempDir Path tempDir) throws Exception {
+        // 文件内容是签名私钥，其他本地用户不得可读
+        assumeTrue(FileSystems.getDefault().supportedFileAttributeViews().contains("posix"));
+
+        Path keyFile = tempDir.resolve("jwt-signing-key.json");
+        RsaKeyProvider.loadOrCreate(keyFile);
+
+        assertThat(PosixFilePermissions.toString(Files.getPosixFilePermissions(keyFile)))
+                .isEqualTo("rw-------");
+    }
 }
 ```
 
@@ -2379,6 +2394,8 @@ import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
 import java.security.NoSuchAlgorithmException;
@@ -2390,6 +2407,7 @@ import java.util.UUID;
 public final class RsaKeyProvider {
 
     private static final int KEY_SIZE = 2048;
+    private static final String OWNER_ONLY_PERMISSIONS = "rw-------";
 
     private RsaKeyProvider() {
     }
@@ -2401,11 +2419,9 @@ public final class RsaKeyProvider {
             }
 
             RSAKey generated = generate();
-            Path parent = keyFile.getParent();
-            if (parent != null) {
-                Files.createDirectories(parent);
-            }
-            Files.writeString(keyFile, generated.toJSONString(), StandardCharsets.UTF_8);
+            Path absolute = keyFile.toAbsolutePath();
+            Files.createDirectories(absolute.getParent());
+            writeOwnerOnlyAtomically(absolute, generated.toJSONString());
             return generated;
         }
         catch (IOException ex) {
@@ -2414,6 +2430,26 @@ public final class RsaKeyProvider {
         catch (ParseException ex) {
             throw new IllegalStateException("JWT 签名密钥文件内容无法解析：" + keyFile, ex);
         }
+    }
+
+    /**
+     * 先写临时文件再原子改名：中途崩溃不会留下半截密钥文件——那会让下次启动
+     * 因解析失败而永久起不来。文件权限收紧为仅属主可读写：内容是签名私钥，
+     * 其他本地用户不得可读。
+     */
+    private static void writeOwnerOnlyAtomically(Path keyFile, String content) throws IOException {
+        Path tmp;
+        try {
+            tmp = Files.createTempFile(keyFile.getParent(), keyFile.getFileName().toString(), ".tmp",
+                    PosixFilePermissions.asFileAttribute(
+                            PosixFilePermissions.fromString(OWNER_ONLY_PERMISSIONS)));
+        }
+        catch (UnsupportedOperationException ex) {
+            // 非 POSIX 文件系统（如 Windows NTFS）不支持该属性，退化为默认权限
+            tmp = Files.createTempFile(keyFile.getParent(), keyFile.getFileName().toString(), ".tmp");
+        }
+        Files.writeString(tmp, content, StandardCharsets.UTF_8);
+        Files.move(tmp, keyFile, StandardCopyOption.ATOMIC_MOVE);
     }
 
     private static RSAKey generate() {
@@ -2437,7 +2473,7 @@ public final class RsaKeyProvider {
 - [ ] **Step 4: 运行测试确认通过**
 
 Run: `cd auth-server && ./mvnw test -Dtest=RsaKeyProviderTest`
-Expected: PASS，3 个测试全部通过
+Expected: PASS，4 个测试全部通过
 
 - [ ] **Step 5: 写失败的 OIDC 端点测试**
 
@@ -2448,13 +2484,21 @@ package com.aventador.unifiedlogin.config;
 
 import com.aventador.unifiedlogin.PostgresTestConfig;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
+import org.springframework.http.MediaType;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
 
+import java.nio.file.Path;
+
+import static org.hamcrest.Matchers.startsWith;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -2462,6 +2506,17 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @AutoConfigureMockMvc
 @Import(PostgresTestConfig.class)
 class OidcEndpointsTest {
+
+    // 密钥文件指向临时目录：避免测试在项目目录里落下真实私钥，
+    // 也保证「生成」分支每次运行都被真实执行而非复用陈旧文件
+    @TempDir
+    static Path keyDir;
+
+    @DynamicPropertySource
+    static void isolatedKeyStore(DynamicPropertyRegistry registry) {
+        registry.add("unified-login.jwt-key-store",
+                () -> keyDir.resolve("jwt-signing-key.json").toString());
+    }
 
     @Autowired
     private MockMvc mockMvc;
@@ -2487,12 +2542,26 @@ class OidcEndpointsTest {
 
     @Test
     void jwksEndpointExposesPublicKeyWithoutPrivateMaterial() throws Exception {
+        // RSA 私钥在 JWK 里共六个字段，漏断言任何一个都可能放过泄漏
         mockMvc.perform(get("/oauth2/jwks"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.keys[0].kty").value("RSA"))
                 .andExpect(jsonPath("$.keys[0].n").exists())
                 .andExpect(jsonPath("$.keys[0].kid").exists())
-                .andExpect(jsonPath("$.keys[0].d").doesNotExist());
+                .andExpect(jsonPath("$.keys[0].d").doesNotExist())
+                .andExpect(jsonPath("$.keys[0].p").doesNotExist())
+                .andExpect(jsonPath("$.keys[0].q").doesNotExist())
+                .andExpect(jsonPath("$.keys[0].dp").doesNotExist())
+                .andExpect(jsonPath("$.keys[0].dq").doesNotExist())
+                .andExpect(jsonPath("$.keys[0].qi").doesNotExist());
+    }
+
+    @Test
+    void userinfoWithoutTokenReturnsUnauthorized() throws Exception {
+        // 401 + Bearer 挑战头证明资源服务器过滤器已接上；配置缺失时这里会是 403 或 302
+        mockMvc.perform(get("/userinfo").accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isUnauthorized())
+                .andExpect(header().string("WWW-Authenticate", startsWith("Bearer")));
     }
 
     @Test
@@ -2520,6 +2589,7 @@ Expected: FAIL — 授权服务器过滤链未配置，`/.well-known/openid-conf
 
 ```yaml
 unified-login:
+  issuer: ${ISSUER_URL:http://localhost:9000}
   jwt-key-store: ${JWT_KEY_STORE:./data/jwt-signing-key.json}
   clients:
     - client-id: demo-web-a
@@ -2540,7 +2610,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 import java.util.List;
 
 @ConfigurationProperties(prefix = "unified-login")
-public record UnifiedLoginProperties(String jwtKeyStore, List<ClientConfig> clients) {
+public record UnifiedLoginProperties(String issuer, String jwtKeyStore, List<ClientConfig> clients) {
 
     public record ClientConfig(String clientId, String clientName, List<String> redirectUris) {
     }
@@ -2580,6 +2650,7 @@ import org.springframework.security.web.util.matcher.MediaTypeRequestMatcher;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.nio.file.Path;
+import java.util.Objects;
 
 @Configuration
 public class AuthorizationServerConfig {
@@ -2601,7 +2672,10 @@ public class AuthorizationServerConfig {
                 .exceptionHandling((exceptions) -> exceptions
                         .defaultAuthenticationEntryPointFor(
                                 new LoginUrlAuthenticationEntryPoint("/login"),
-                                new MediaTypeRequestMatcher(MediaType.TEXT_HTML)));
+                                new MediaTypeRequestMatcher(MediaType.TEXT_HTML)))
+                // 必需：/userinfo 端点自身不解析 Bearer token，靠资源服务器过滤器
+                // 先完成认证。缺这一句该端点对任何合法 token 都返回拒绝
+                .oauth2ResourceServer((resourceServer) -> resourceServer.jwt(Customizer.withDefaults()));
 
         return http.build();
     }
@@ -2614,7 +2688,9 @@ public class AuthorizationServerConfig {
 
     @Bean
     public JWKSource<SecurityContext> jwkSource(UnifiedLoginProperties properties) {
-        RSAKey rsaKey = RsaKeyProvider.loadOrCreate(Path.of(properties.jwtKeyStore()));
+        String keyStore = Objects.requireNonNull(properties.jwtKeyStore(),
+                "unified-login.jwt-key-store 未配置");
+        RSAKey rsaKey = RsaKeyProvider.loadOrCreate(Path.of(keyStore));
         return new ImmutableJWKSet<>(new JWKSet(rsaKey));
     }
 
@@ -2624,8 +2700,12 @@ public class AuthorizationServerConfig {
     }
 
     @Bean
-    public AuthorizationServerSettings authorizationServerSettings() {
-        return AuthorizationServerSettings.builder().build();
+    public AuthorizationServerSettings authorizationServerSettings(UnifiedLoginProperties properties) {
+        // issuer 必须来自配置（ISSUER_URL）：写死在代码里的话，部署到任何非本地
+        // 环境都会在 discovery 与 JWT 的 iss 里广播错误地址
+        return AuthorizationServerSettings.builder()
+                .issuer(Objects.requireNonNull(properties.issuer(), "unified-login.issuer 未配置"))
+                .build();
     }
 }
 ```
@@ -2677,7 +2757,7 @@ data/
 - [ ] **Step 12: 运行测试确认通过**
 
 Run: `cd auth-server && ./mvnw test -Dtest=OidcEndpointsTest`
-Expected: PASS，4 个测试全部通过
+Expected: PASS，5 个测试全部通过
 
 - [ ] **Step 13: 运行全部测试并提交**
 
@@ -3100,6 +3180,17 @@ class AuthorizationCodeFlowTest {
     }
 
     @Test
+    void userinfoReturnsSubjectWithValidAccessToken() throws Exception {
+        // Task 8 只验证了「无 token 得 401」；这里补上正向链路：带合法 token 得 200
+        String tokenResponse = exchangeCode(mockMvc, authorizeAndExtractCode(mockMvc, USER_EMAIL));
+        String accessToken = jsonField(tokenResponse, "access_token");
+
+        mockMvc.perform(get("/userinfo").header("Authorization", "Bearer " + accessToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.sub").exists());
+    }
+
+    @Test
     void refreshTokenRotatesAndOldOneIsRejected() throws Exception {
         String tokenResponse = exchangeCode(mockMvc, authorizeAndExtractCode(mockMvc, USER_EMAIL));
         String firstRefreshToken = jsonField(tokenResponse, "refresh_token");
@@ -3124,7 +3215,7 @@ class AuthorizationCodeFlowTest {
 - [ ] **Step 2: 运行测试**
 
 Run: `cd auth-server && ./mvnw test -Dtest=AuthorizationCodeFlowTest`
-Expected: 6 个测试全部 PASS。
+Expected: 7 个测试全部 PASS。
 
 若出现失败，按以下对照排查，**不要放宽断言**：
 - `authorizationRequestWithoutPkceIsRejected` 失败 → Task 7 的 `requireProofKey(true)` 未生效
