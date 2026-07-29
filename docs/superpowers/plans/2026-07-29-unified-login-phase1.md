@@ -107,6 +107,14 @@ e2e/                                            Playwright 端到端用例
 
 先写下面的 `auth-server/pom.xml`，然后在 `auth-server/` 目录下执行 `mvn -N wrapper:wrapper` 生成 `mvnw`、`mvnw.cmd` 与 `.mvn/wrapper/`。后续所有步骤都用 `./mvnw` 而非 `mvn`，以锁定构建工具版本。生成后把 wrapper 文件一并纳入版本控制。
 
+**⚠ 生成后必须检查 `.mvn/wrapper/maven-wrapper.properties` 的 `distributionUrl`。** 如果开发机的 `~/.m2/settings.xml` 配置了私服镜像，`wrapper:wrapper` 会把那个内网地址写进生成文件，提交后其他机器与 CI 上 `./mvnw` 的第一步下载就会失败。该值必须是公共地址：
+
+```properties
+distributionUrl=https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/3.9.13/apache-maven-3.9.13-bin.zip
+```
+
+本机私服加速属于本机基础设施，通过环境变量或本机 `settings.xml` 解决，**不得写进提交到仓库的文件**。
+
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
 <project xmlns="http://maven.apache.org/POM/4.0.0"
