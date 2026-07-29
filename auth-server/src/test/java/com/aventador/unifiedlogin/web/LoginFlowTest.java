@@ -7,6 +7,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.web.servlet.MockMvc;
 
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestBuilders.formLogin;
@@ -29,6 +30,9 @@ class LoginFlowTest {
 
     @Autowired
     private RegistrationService registrationService;
+
+    @Autowired
+    private JdbcTemplate jdbcTemplate;
 
     @Test
     void loginPageIsPubliclyAccessible() throws Exception {
@@ -69,6 +73,18 @@ class LoginFlowTest {
         mockMvc.perform(post("/login").with(csrf())
                         .param("username", "ghost@example.com")
                         .param("password", "a valid password"))
+                .andExpect(unauthenticated())
+                .andExpect(redirectedUrl("/login?error"));
+    }
+
+    @Test
+    void disabledAccountFailsIdenticallyToWrongPassword() throws Exception {
+        String email = "login-disabled@example.com";
+        registrationService.register(email, "a valid password");
+        jdbcTemplate.update("UPDATE app_user SET status = 'DISABLED' WHERE email = ?", email);
+
+        // 密码正确但账号被禁用：对外表现必须与密码错误完全一致，否则泄漏「账号存在但被禁用」
+        mockMvc.perform(formLogin("/login").user(email).password("a valid password"))
                 .andExpect(unauthenticated())
                 .andExpect(redirectedUrl("/login?error"));
     }
