@@ -3480,6 +3480,12 @@ git commit -m "feat(config): 令牌主体改为用户 ID 并附带邮箱
 需要在测试配置里注册第二个客户端。本任务已有客户端相关的验收场景，一并补齐：
 注册一个不含 `refresh_token` 授权类型的测试客户端，断言它拿 refresh token 换发时被拒。
 
+**另一个需要在本任务确认的框架行为**：授权码换取令牌时**完全不带** `code_verifier`
+（而非带错值）的请求，返回的是 302 跳登录页而不是 400 `invalid_grant`——因为没有任何
+内置转换器匹配得上，请求在客户端认证阶段就被判为未认证。结果仍是拒绝签发，安全上没问题，
+但响应形态不符合 OAuth 规范。本任务需要为这个场景写一条用例，把当前行为固定下来；
+若判定必须返回标准错误体，则属于需要另行决策的改动，先记录不要擅自改。
+
 - [ ] **Step 1: 写完整流程测试**
 
 `auth-server/src/test/java/com/aventador/unifiedlogin/config/AuthorizationCodeFlowTest.java`
