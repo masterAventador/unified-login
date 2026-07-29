@@ -162,11 +162,6 @@ e2e/                                            Playwright 端到端用例
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-flyway</artifactId>
         </dependency>
-        <!-- 登录失败限流的带过期计数（Task 11）。groupId 带连字符、包名不带 -->
-        <dependency>
-            <groupId>com.github.ben-manes.caffeine</groupId>
-            <artifactId>caffeine</artifactId>
-        </dependency>
         <dependency>
             <groupId>org.postgresql</groupId>
             <artifactId>postgresql</artifactId>
@@ -2974,7 +2969,19 @@ git commit -m "test(config): 补充授权码流程的协议一致性验收
 1. **对不存在与格式非法的邮箱同样计数并锁定**。若只对真实账号锁定，攻击者用「这个邮箱会不会被锁」就能反推账号是否存在，等于绕开了 Task 6 建立的防枚举。因此这里用 `EmailAddress.normalize` 而非 `new EmailAddress(...)`——后者遇到非法格式会抛异常。
 2. **计数状态在应用内存中**，仅适用于单实例部署。多实例需改共享存储，此约束已写入规格书与本计划的已知限制。
 
-- [ ] **Step 1: 写失败的服务单元测试**
+- [ ] **Step 1: 添加 Caffeine 依赖**
+
+在 `auth-server/pom.xml` 的依赖列表中追加。版本由 Spring Boot 管理（3.2.4），不要写死。注意 **groupId 带连字符、Java 包名不带**，这是该库的经典坑：
+
+```xml
+        <!-- 登录失败限流用的带过期计数 -->
+        <dependency>
+            <groupId>com.github.ben-manes.caffeine</groupId>
+            <artifactId>caffeine</artifactId>
+        </dependency>
+```
+
+- [ ] **Step 2: 写失败的服务单元测试**
 
 `auth-server/src/test/java/com/aventador/unifiedlogin/security/LoginAttemptServiceTest.java`
 
@@ -3121,12 +3128,12 @@ class LoginAttemptServiceTest {
 }
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [ ] **Step 3: 运行测试确认失败**
 
 Run: `cd auth-server && ./mvnw test -Dtest=LoginAttemptServiceTest`
 Expected: FAIL — 编译错误，`LoginAttemptService` 与 `LoginRateLimitProperties` 尚不存在
 
-- [ ] **Step 3: 写配置项与限流服务**
+- [ ] **Step 4: 写配置项与限流服务**
 
 `auth-server/src/main/java/com/aventador/unifiedlogin/security/LoginRateLimitProperties.java`
 
@@ -3210,12 +3217,12 @@ public class LoginAttemptService {
 }
 ```
 
-- [ ] **Step 4: 运行测试确认通过**
+- [ ] **Step 5: 运行测试确认通过**
 
 Run: `cd auth-server && ./mvnw test -Dtest=LoginAttemptServiceTest`
 Expected: PASS，10 个测试全部通过
 
-- [ ] **Step 5: 写失败的集成测试**
+- [ ] **Step 6: 写失败的集成测试**
 
 `auth-server/src/test/java/com/aventador/unifiedlogin/security/LoginRateLimitIntegrationTest.java`
 
@@ -3337,12 +3344,12 @@ class LoginRateLimitIntegrationTest {
 }
 ```
 
-- [ ] **Step 6: 运行测试确认失败**
+- [ ] **Step 7: 运行测试确认失败**
 
 Run: `cd auth-server && ./mvnw test -Dtest=LoginRateLimitIntegrationTest`
 Expected: FAIL — 限流尚未接入过滤链，连续失败后第 6 次仍按正常登录处理
 
-- [ ] **Step 7: 写事件监听器与限流过滤器**
+- [ ] **Step 8: 写事件监听器与限流过滤器**
 
 `auth-server/src/main/java/com/aventador/unifiedlogin/security/LoginAttemptEventListener.java`
 
@@ -3433,7 +3440,7 @@ public class LoginRateLimitFilter extends OncePerRequestFilter {
 }
 ```
 
-- [ ] **Step 8: 接入过滤链并启用配置**
+- [ ] **Step 9: 接入过滤链并启用配置**
 
 `auth-server/src/main/java/com/aventador/unifiedlogin/config/SecurityConfig.java` 整体替换为：
 
@@ -3500,7 +3507,7 @@ public class SecurityConfig {
     max-attempts-per-ip-per-minute: 20
 ```
 
-- [ ] **Step 9: 在登录页显示锁定提示**
+- [ ] **Step 10: 在登录页显示锁定提示**
 
 在 `auth-server/src/main/resources/templates/login.html` 的错误提示下方追加一行：
 
@@ -3508,17 +3515,17 @@ public class SecurityConfig {
     <p th:if="${param.locked}" data-testid="login-locked">尝试次数过多，请在 15 分钟后再试</p>
 ```
 
-- [ ] **Step 10: 运行测试确认通过**
+- [ ] **Step 11: 运行测试确认通过**
 
 Run: `cd auth-server && ./mvnw test -Dtest=LoginRateLimitIntegrationTest`
 Expected: PASS，5 个测试全部通过
 
-- [ ] **Step 11: 运行全部测试**
+- [ ] **Step 12: 运行全部测试**
 
 Run: `cd auth-server && ./mvnw test`
 Expected: 全部通过。若其他登录相关测试类出现意外的 429 或 `/login?locked`，说明限流状态在测试类之间泄漏——应在受影响的测试类补 `loginAttemptService.clearAll()`，而不是调高阈值掩盖问题
 
-- [ ] **Step 12: 提交**
+- [ ] **Step 13: 提交**
 
 ```bash
 git add auth-server/src
