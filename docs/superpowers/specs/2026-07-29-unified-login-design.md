@@ -196,6 +196,10 @@ Java 包名为 `com.aventador.unifiedlogin`。
 
 **决策**：注册自定义 `OAuth2TokenGenerator`，用一个不含该拦截的 refresh token 生成器替换框架默认实现，恢复对公有客户端签发。这是有意覆盖框架的保守默认，依据是 OAuth 2.1 允许公有客户端使用 refresh token，前提是 token 必须轮转或与发送方绑定——本设计已启用一次性轮转（`reuseRefreshTokens(false)`），满足该前提。自定义生成器除去掉公有客户端拦截外，其余行为（96 字节 Base64URL 随机串、寿命取 `TokenSettings.refreshTokenTimeToLive`）与框架实现保持一致。
 
+**同一决策的第二层障碍：刷新请求的客户端认证**。框架在客户端认证层还有一道拦截：`PublicClientAuthenticationConverter` 第一行调用的 `matchesPkceTokenRequest()` 要求「授权类型为 `authorization_code` 且请求带 `code_verifier`」，刷新请求两条都不满足，转换器返回 `null`；其余内置转换器全部要求客户端密钥、证书或断言，公有客户端一个也用不上。结果是刷新请求根本无法通过客户端认证，被授权服务器过滤链重定向到登录页（302）。
+
+因此还需注册一对自定义 `AuthenticationConverter` + `AuthenticationProvider`，让公有客户端凭 `client_id` 通过刷新请求的客户端认证。**这不是降低安全等级**：公有客户端按定义就没有任何客户端凭证，授权码流程里 PKCE 证明的也是授权码与请求方的绑定关系，而非客户端身份。刷新请求的真正凭证是 refresh token 本身，其安全性由一次性轮转与重放检测保障。自定义 provider 必须做三项校验，任一不满足即返回 `invalid_client`：客户端存在、其认证方式包含 `NONE`、其授权类型包含 `refresh_token`。转换器与 provider 都必须严格限定只处理 `grant_type=refresh_token` 且不带 `client_secret` 的请求，绝不能抢走授权码流程的客户端认证——否则会绕过 `code_verifier` 校验。
+
 **关于 ID Token 寿命的框架约束**：Spring Authorization Server 的 `TokenSettings` 不提供 ID token 存活时间的配置项（只能配签名算法），ID token 的过期时间由 `accessTokenTimeToLive` 决定。因此它必然是 15 分钟，无法单独缩短。这在安全上可接受：ID token 只在登录完成的那一次交互中被前端读取一次，之后即被丢弃，实际暴露窗口远小于名义寿命；且它不被任何接口接受为凭证。
 
 **会话 Cookie 属性**：`HttpOnly`、`Secure`、`SameSite=Lax`、`Domain` 不设置（即仅 `auth` 子域自身可用）。

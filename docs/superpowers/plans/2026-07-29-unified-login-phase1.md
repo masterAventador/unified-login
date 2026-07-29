@@ -3270,21 +3270,190 @@ refresh token（见 Global Constraints 中的对应条目），下一步就是�
 `DelegatingOAuth2TokenGenerator`、`OAuth2AccessTokenGenerator`、`OAuth2TokenGenerator`、
 `OAuth2TokenContext`）、`java.time.Instant`、`java.util.Base64`。
 
-- [ ] **Step 9: 运行测试确认通过**
+- [ ] **Step 9: 打通刷新请求的客户端认证**
+
+做完 Step 8 后重跑，失败点会从「响应里没有 `refresh_token`」前移到「刷新请求返回 302 跳登录页」。
+这是**同一个覆盖决策的第二层障碍**，不是新问题：`PublicClientAuthenticationConverter`
+第一行调用的 `matchesPkceTokenRequest()` 要求「`authorization_code` + 带 `code_verifier`」，
+刷新请求两条都不满足；其余内置转换器全部要求密钥/证书/断言，公有客户端一个也用不上，
+于是请求未通过客户端认证，被过滤链的 `.anyRequest().authenticated()` 重定向到 `/login`。
+
+新建 `auth-server/src/main/java/com/aventador/unifiedlogin/config/PublicClientRefreshTokenAuthenticationConverter.java`：
+
+```java
+package com.aventador.unifiedlogin.config;
+
+import jakarta.servlet.http.HttpServletRequest;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.oauth2.core.AuthorizationGrantType;
+import org.springframework.security.oauth2.core.ClientAuthenticationMethod;
+import org.springframework.security.oauth2.core.endpoint.OAuth2ParameterNames;
+import org.springframework.security.oauth2.server.authorization.authentication.OAuth2ClientAuthenticationToken;
+import org.springframework.security.web.authentication.AuthenticationConverter;
+import org.springframework.util.StringUtils;
+
+import java.util.HashMap;
+import java.util.Map;
+
+/**
+ * 让公有客户端能通过刷新请求的客户端认证。框架内置的转换器都覆盖不到这个场景，
+ * 见规格书 §6.3。**必须严格限定适用范围**：只认 grant_type=refresh_token 且不带
+ * client_secret 的请求，绝不能抢走授权码流程的客户端认证——否则会绕过 code_verifier 校验。
+ */
+final class PublicClientRefreshTokenAuthenticationConverter implements AuthenticationConverter {
+
+    @Override
+    public Authentication convert(HttpServletRequest request) {
+        String grantType = request.getParameter(OAuth2ParameterNames.GRANT_TYPE);
+        if (!AuthorizationGrantType.REFRESH_TOKEN.getValue().equals(grantType)) {
+            return null;
+        }
+        // 带密钥的请求交给框架自己的转换器，这里只处理公有客户端
+        if (request.getParameter(OAuth2ParameterNames.CLIENT_SECRET) != null) {
+            return null;
+        }
+        String clientId = request.getParameter(OAuth2ParameterNames.CLIENT_ID);
+        if (!StringUtils.hasText(clientId)) {
+            return null;
+        }
+
+        // 把 grant_type 放进附加参数，供 provider 二次确认来源，避免误处理其他流程的令牌
+        Map<String, Object> additionalParameters = new HashMap<>();
+        additionalParameters.put(OAuth2ParameterNames.GRANT_TYPE, grantType);
+
+        return new OAuth2ClientAuthenticationToken(clientId, ClientAuthenticationMethod.NONE, null,
+                additionalParameters);
+    }
+}
+```
+
+新建 `auth-server/src/main/java/com/aventador/unifiedlogin/config/PublicClientRefreshTokenAuthenticationProvider.java`：
+
+```java
+package com.aventador.unifiedlogin.config;
+
+import org.springframework.security.authentication.AuthenticationProvider;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.AuthenticationException;
+import org.springframework.security.oauth2.core.AuthorizationGrantType;
+import org.springframework.security.oauth2.core.ClientAuthenticationMethod;
+import org.springframework.security.oauth2.core.OAuth2AuthenticationException;
+import org.springframework.security.oauth2.core.OAuth2ErrorCodes;
+import org.springframework.security.oauth2.core.endpoint.OAuth2ParameterNames;
+import org.springframework.security.oauth2.server.authorization.authentication.OAuth2ClientAuthenticationToken;
+import org.springframework.security.oauth2.server.authorization.client.RegisteredClient;
+import org.springframework.security.oauth2.server.authorization.client.RegisteredClientRepository;
+
+import java.util.Map;
+
+final class PublicClientRefreshTokenAuthenticationProvider implements AuthenticationProvider {
+
+    private final RegisteredClientRepository registeredClientRepository;
+
+    PublicClientRefreshTokenAuthenticationProvider(RegisteredClientRepository registeredClientRepository) {
+        this.registeredClientRepository = registeredClientRepository;
+    }
+
+    @Override
+    public Authentication authenticate(Authentication authentication) throws AuthenticationException {
+        OAuth2ClientAuthenticationToken clientAuthentication = (OAuth2ClientAuthenticationToken) authentication;
+
+        // 返回 null 表示「本 provider 不处理」，认证链会继续交给框架自己的 provider。
+        // 这两道判断保证只接手上面那个转换器造出来的刷新请求。
+        if (!ClientAuthenticationMethod.NONE.equals(clientAuthentication.getClientAuthenticationMethod())) {
+            return null;
+        }
+        Map<String, Object> additionalParameters = clientAuthentication.getAdditionalParameters();
+        if (additionalParameters == null || !AuthorizationGrantType.REFRESH_TOKEN.getValue()
+                .equals(additionalParameters.get(OAuth2ParameterNames.GRANT_TYPE))) {
+            return null;
+        }
+
+        RegisteredClient registeredClient =
+                registeredClientRepository.findByClientId((String) clientAuthentication.getPrincipal());
+        if (registeredClient == null
+                || !registeredClient.getClientAuthenticationMethods().contains(ClientAuthenticationMethod.NONE)
+                || !registeredClient.getAuthorizationGrantTypes().contains(AuthorizationGrantType.REFRESH_TOKEN)) {
+            throw new OAuth2AuthenticationException(OAuth2ErrorCodes.INVALID_CLIENT);
+        }
+
+        return new OAuth2ClientAuthenticationToken(registeredClient, ClientAuthenticationMethod.NONE, null);
+    }
+
+    @Override
+    public boolean supports(Class<?> authentication) {
+        return OAuth2ClientAuthenticationToken.class.isAssignableFrom(authentication);
+    }
+}
+```
+
+在 `AuthorizationServerConfig.authorizationServerSecurityFilterChain` 里挂上去。
+方法签名要增加一个 `RegisteredClientRepository` 参数：
+
+```java
+    public SecurityFilterChain authorizationServerSecurityFilterChain(HttpSecurity http,
+            RegisteredClientRepository registeredClientRepository) throws Exception {
+```
+
+`.with(...)` 的 customizer 改成：
+
+```java
+                .with(authorizationServerConfigurer, (authorizationServer) -> authorizationServer
+                        .clientAuthentication((clientAuthentication) -> clientAuthentication
+                                .authenticationConverter(new PublicClientRefreshTokenAuthenticationConverter())
+                                .authenticationProvider(new PublicClientRefreshTokenAuthenticationProvider(
+                                        registeredClientRepository)))
+                        .oidc(Customizer.withDefaults()))
+```
+
+- [ ] **Step 10: 补一条负向测试，确认自定义认证路径没有放开客户端校验**
+
+在 `JwtClaimsConfigTest` 中追加。这条用例守的是「自定义 provider 仍然校验客户端」，
+若哪天有人把校验删了，它必须立刻变红：
+
+```java
+    @Test
+    void refreshWithUnknownClientIsRejected() throws Exception {
+        String email = "claims-refresh-badclient@example.com";
+        registrationService.register(email, PASSWORD);
+
+        String code = OAuth2TestFlows.authorizeAndExtractCode(mockMvc,
+                OAuth2TestFlows.login(mockMvc, email, PASSWORD));
+        String refreshToken = OAuth2TestFlows.jsonField(
+                OAuth2TestFlows.exchangeCode(mockMvc, code), "refresh_token");
+
+        mockMvc.perform(post("/oauth2/token")
+                        .param("grant_type", "refresh_token")
+                        .param("client_id", "no-such-client")
+                        .param("refresh_token", refreshToken))
+                .andExpect(status().isUnauthorized());
+    }
+```
+
+需要 import `org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post`
+与 `org.springframework.test.web.servlet.result.MockMvcResultMatchers.status`。
+
+- [ ] **Step 11: 运行测试确认通过**
 
 Run: `cd auth-server && ./mvnw test -Dtest=JwtClaimsConfigTest`
-Expected: PASS，5 个测试全部通过
+Expected: PASS，6 个测试全部通过
 
-再确认这条新用例确实有区分力：临时把 `jwtGenerator.setJwtCustomizer(jwtCustomizer)`
-注释掉重跑，应看到 `refreshedAccessTokenKeepsUserIdSubjectAndEmail` 因 `sub` 不是 UUID 而失败；
-恢复后再跑一次确认通过。
+再做两项区分力验证，确认这两条新用例不是摆设：
 
-- [ ] **Step 10: 运行全部测试**
+1. 临时把 `jwtGenerator.setJwtCustomizer(jwtCustomizer)` 注释掉重跑，应看到
+   `refreshedAccessTokenKeepsUserIdSubjectAndEmail` 因 `sub` 不是 UUID 而失败——
+   这同时验证了「自定义 `OAuth2TokenGenerator` 之后框架不再自动装配 customizer」这条约束。
+2. 临时把 provider 里的三项客户端校验改成直接放行，应看到
+   `refreshWithUnknownClientIsRejected` 失败。
+
+两项都验证完必须恢复代码并重跑确认全绿。
+
+- [ ] **Step 12: 运行全部测试**
 
 Run: `cd auth-server && ./mvnw test`
 Expected: 全部通过
 
-- [ ] **Step 11: 提交**
+- [ ] **Step 13: 提交**
 
 ```bash
 git add auth-server/src
