@@ -303,7 +303,13 @@ package com.aventador.unifiedlogin;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
 import org.springframework.context.annotation.Bean;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
 import org.testcontainers.postgresql.PostgreSQLContainer;
+
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 
 @TestConfiguration(proxyBeanMethods = false)
 public class PostgresTestConfig {
@@ -312,6 +318,19 @@ public class PostgresTestConfig {
     @ServiceConnection
     PostgreSQLContainer postgresContainer() {
         return new PostgreSQLContainer("postgres:16-alpine");
+    }
+
+    /**
+     * 所有加载完整上下文的测试都会实例化 JWKSource，从而按配置路径生成一把真实 RSA 私钥。
+     * 这里统一把密钥路径改写到临时目录：否则每次跑测试都会在项目目录下落一把真私钥，
+     * 且「首次生成」分支因文件已存在而不再被执行。
+     */
+    @DynamicPropertySource
+    static void isolateJwtKeyStore(DynamicPropertyRegistry registry) throws IOException {
+        Path keyDir = Files.createTempDirectory("unified-login-test-keys");
+        keyDir.toFile().deleteOnExit();
+        registry.add("unified-login.jwt-key-store",
+                () -> keyDir.resolve("jwt-signing-key.json").toString());
     }
 }
 ```
@@ -2454,8 +2473,14 @@ public final class RsaKeyProvider {
             // 非 POSIX 文件系统（如 Windows NTFS）不支持该属性，退化为默认权限
             tmp = Files.createTempFile(keyFile.getParent(), keyFile.getFileName().toString(), ".tmp");
         }
-        Files.writeString(tmp, content, StandardCharsets.UTF_8);
-        Files.move(tmp, keyFile, StandardCopyOption.ATOMIC_MOVE);
+        try {
+            Files.writeString(tmp, content, StandardCharsets.UTF_8);
+            Files.move(tmp, keyFile, StandardCopyOption.ATOMIC_MOVE);
+        }
+        catch (IOException ex) {
+            Files.deleteIfExists(tmp);
+            throw ex;
+        }
     }
 
     private static RSAKey generate() {
@@ -2490,17 +2515,12 @@ package com.aventador.unifiedlogin.config;
 
 import com.aventador.unifiedlogin.PostgresTestConfig;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.io.TempDir;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
-import org.springframework.test.context.DynamicPropertyRegistry;
-import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
-
-import java.nio.file.Path;
 
 import static org.hamcrest.Matchers.startsWith;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -2513,17 +2533,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @Import(PostgresTestConfig.class)
 class OidcEndpointsTest {
 
-    // 密钥文件指向临时目录：避免测试在项目目录里落下真实私钥，
-    // 也保证「生成」分支每次运行都被真实执行而非复用陈旧文件
-    @TempDir
-    static Path keyDir;
-
-    @DynamicPropertySource
-    static void isolatedKeyStore(DynamicPropertyRegistry registry) {
-        registry.add("unified-login.jwt-key-store",
-                () -> keyDir.resolve("jwt-signing-key.json").toString());
-    }
-
+    // 密钥路径的隔离由 PostgresTestConfig 统一提供（所有加载上下文的测试共用），
+    // 不在此单点覆盖——否则其他测试类仍会在项目目录里生成真实私钥
     @Autowired
     private MockMvc mockMvc;
 
