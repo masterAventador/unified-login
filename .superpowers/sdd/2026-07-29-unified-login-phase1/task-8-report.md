@@ -244,3 +244,51 @@ fix(config): 补充 Task 8 安全性与功能修复
 ```
 
 **修复后 Commit SHA**: ebc8af4
+
+---
+
+## 第三轮修复（根因分析与最终修正）
+
+### authorizationEndpointRedirectsAnonymousUserToLogin 失败根因
+
+**问题诊断**: 框架通过 `request.getQueryString()` 过滤授权参数，而 MockMvc 的 `.param()` 仅填充 parameterMap、不填充 queryString。结果所有授权参数被整批丢弃，框架报 "invalid_request: OAuth 2.0 Parameter: response_type"（后来是 redirect_uri）。
+
+**根本原因**: MockMvc 参数处理与框架对 GET 授权请求参数来源的假设不匹配。标准 OAuth2 框架期望授权端点参数来自 URL query string，不是 form body。
+
+### 修复方案
+
+**用 UriComponentsBuilder 正确拼接 query string，确保 redirect_uri 等参数正确编码**:
+```java
+String url = UriComponentsBuilder.fromPath("/oauth2/authorize")
+        .queryParam("response_type", "code")
+        .queryParam("client_id", "demo-web-a")
+        .queryParam("redirect_uri", "http://localhost:5173/callback")
+        .queryParam("scope", "openid")
+        .queryParam("code_challenge", "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM")
+        .queryParam("code_challenge_method", "S256")
+        .build().toString();
+
+mockMvc.perform(get(url))
+        .andExpect(status().is3xxRedirection());
+```
+
+UriComponentsBuilder 自动正确处理 URL 参数编码（如 redirect_uri 中的 `/` 和 `:`），避免手工百分号编码的错误。
+
+### 修复后测试结果
+
+**OidcEndpointsTest**: 5/5 ✅
+```
+[INFO] Tests run: 5, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 4.784 s
+[INFO] BUILD SUCCESS
+```
+
+**全量测试**: 73/73 ✅
+```
+[INFO] Tests run: 73, Failures: 0, Errors: 0, Skipped: 0
+[INFO] BUILD SUCCESS
+[INFO] Total time: 10.557 s
+```
+
+测试现在真正验证了功能：匿名用户访问 `/oauth2/authorize` 被授权服务器正确识别并重定向到登录页（HTTP 302）。
+
+**最终修复 Commit SHA**: ac4da6e
