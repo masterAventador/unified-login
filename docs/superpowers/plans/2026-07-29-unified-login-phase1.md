@@ -67,7 +67,6 @@ auth-server/
 │   ├── web/
 │   │   ├── RegistrationController.java        注册页与表单提交
 │   │   ├── LoginController.java               登录页渲染
-│   │   └── RegistrationForm.java              注册表单对象
 │   ├── config/
 │   │   ├── SecurityConfig.java                两条过滤链 + 表单登录
 │   │   ├── AuthorizationServerConfig.java     SAS 配置、JWKSource、settings
@@ -1148,7 +1147,6 @@ git commit -m "feat(user): 新增用户实体、仓储与用户服务
 **Files:**
 - Create: `auth-server/src/main/java/com/aventador/unifiedlogin/registration/RegistrationService.java`
 - Create: `auth-server/src/main/java/com/aventador/unifiedlogin/registration/EmailAlreadyRegisteredException.java`
-- Create: `auth-server/src/main/java/com/aventador/unifiedlogin/web/RegistrationForm.java`
 - Create: `auth-server/src/main/java/com/aventador/unifiedlogin/web/RegistrationController.java`
 - Create: `auth-server/src/main/resources/templates/register.html`
 - Create: `auth-server/src/main/java/com/aventador/unifiedlogin/config/SecurityConfig.java`
@@ -1454,18 +1452,12 @@ class RegistrationControllerTest {
 Run: `cd auth-server && ./mvnw test -Dtest=RegistrationControllerTest`
 Expected: FAIL — `/register` 返回 401 或 404（尚无控制器，且默认安全策略拦截全部请求）
 
-- [ ] **Step 7: 写表单对象与控制器**
-
-`auth-server/src/main/java/com/aventador/unifiedlogin/web/RegistrationForm.java`
-
-```java
-package com.aventador.unifiedlogin.web;
-
-public record RegistrationForm(String email, String password) {
-}
-```
+- [ ] **Step 7: 写控制器**
 
 `auth-server/src/main/java/com/aventador/unifiedlogin/web/RegistrationController.java`
+
+控制器用 `@RequestParam` 直接收两个字段，不引入表单对象——两个参数不值得一个 record，
+等字段多到需要绑定校验时再建（YAGNI）。
 
 三类校验异常统一转成页面上的错误提示，且失败时把邮箱回填，避免用户重填：
 
@@ -1571,7 +1563,9 @@ public class SecurityConfig {
     public SecurityFilterChain defaultSecurityFilterChain(HttpSecurity http) throws Exception {
         http
                 .authorizeHttpRequests((authorize) -> authorize
-                        .requestMatchers("/register").permitAll()
+                        // /error 必须放行：Spring Security 7 默认拦截 ERROR dispatch，
+                        // 不放行时未捕获异常的错误页转发会被再拦一次，500 都呈现不出来
+                        .requestMatchers("/register", "/error").permitAll()
                         .anyRequest().authenticated());
 
         return http.build();
@@ -1907,7 +1901,7 @@ public class SecurityConfig {
     public SecurityFilterChain defaultSecurityFilterChain(HttpSecurity http) throws Exception {
         http
                 .authorizeHttpRequests((authorize) -> authorize
-                        .requestMatchers("/register", "/login").permitAll()
+                        .requestMatchers("/register", "/login", "/error").permitAll()
                         .anyRequest().authenticated())
                 .formLogin(Customizer.withDefaults());
 
@@ -2581,7 +2575,7 @@ public class SecurityConfig {
     public SecurityFilterChain defaultSecurityFilterChain(HttpSecurity http) throws Exception {
         http
                 .authorizeHttpRequests((authorize) -> authorize
-                        .requestMatchers("/register", "/login").permitAll()
+                        .requestMatchers("/register", "/login", "/error").permitAll()
                         .anyRequest().authenticated())
                 .formLogin(Customizer.withDefaults());
 
@@ -3601,7 +3595,7 @@ public class SecurityConfig {
                                                           LoginAttemptService loginAttemptService) throws Exception {
         http
                 .authorizeHttpRequests((authorize) -> authorize
-                        .requestMatchers("/register", "/login").permitAll()
+                        .requestMatchers("/register", "/login", "/error").permitAll()
                         .anyRequest().authenticated())
                 .formLogin(Customizer.withDefaults())
                 .addFilterBefore(new LoginRateLimitFilter(loginAttemptService),
