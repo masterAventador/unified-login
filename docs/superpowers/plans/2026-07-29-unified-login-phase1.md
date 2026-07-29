@@ -1816,7 +1816,7 @@ class LoginFlowTest {
     void protectedPageRedirectsToLoginWhenAnonymous() throws Exception {
         mockMvc.perform(get("/"))
                 .andExpect(status().is3xxRedirection())
-                .andExpect(redirectedUrl("http://localhost/login"));
+                .andExpect(redirectedUrl("/login"));
     }
 }
 ```
@@ -1900,6 +1900,8 @@ public class SecurityConfig {
     public SecurityFilterChain defaultSecurityFilterChain(HttpSecurity http) throws Exception {
         http
                 .authorizeHttpRequests((authorize) -> authorize
+                        // /error 必须放行：Spring Security 7 默认拦截 ERROR dispatch，
+                        // 不放行时未捕获异常的错误页转发会被再拦一次，500 都呈现不出来
                         .requestMatchers("/register", "/login", "/error").permitAll()
                         .anyRequest().authenticated())
                 .formLogin((formLogin) -> formLogin
@@ -2575,6 +2577,8 @@ public class SecurityConfig {
     public SecurityFilterChain defaultSecurityFilterChain(HttpSecurity http) throws Exception {
         http
                 .authorizeHttpRequests((authorize) -> authorize
+                        // /error 必须放行：Spring Security 7 默认拦截 ERROR dispatch，
+                        // 不放行时未捕获异常的错误页转发会被再拦一次，500 都呈现不出来
                         .requestMatchers("/register", "/login", "/error").permitAll()
                         .anyRequest().authenticated())
                 .formLogin((formLogin) -> formLogin
@@ -3596,6 +3600,8 @@ public class SecurityConfig {
                                                           LoginAttemptService loginAttemptService) throws Exception {
         http
                 .authorizeHttpRequests((authorize) -> authorize
+                        // /error 必须放行：Spring Security 7 默认拦截 ERROR dispatch，
+                        // 不放行时未捕获异常的错误页转发会被再拦一次，500 都呈现不出来
                         .requestMatchers("/register", "/login", "/error").permitAll()
                         .anyRequest().authenticated())
                 .formLogin((formLogin) -> formLogin
