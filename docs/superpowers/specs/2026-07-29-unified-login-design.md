@@ -41,7 +41,7 @@
 
 | 项 | 选型 | 版本 | 说明 |
 | --- | --- | --- | --- |
-| 语言 | Java | 21 LTS | Spring Boot 4.1 最低要求 Java 17，选 21 LTS |
+| 语言 | Java | 17 LTS | Spring Boot 4.1 的最低要求版本，且为开发机既有环境；本项目不需要更高版本的语言特性 |
 | 应用框架 | Spring Boot | 4.1.0 | |
 | 授权服务器 | Spring Authorization Server | 7.1.0 | 提供完整 OIDC 协议端点 |
 | 数据库 | PostgreSQL | 16+ | |

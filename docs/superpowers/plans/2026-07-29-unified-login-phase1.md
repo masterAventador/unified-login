@@ -6,7 +6,7 @@
 
 **Architecture:** 单体 Spring Boot 应用，Spring Authorization Server 提供 OIDC 协议端点，Thymeleaf 渲染注册与登录页，PostgreSQL 存储用户与授权数据，Flyway 管理表结构。用户域（`user` 包）不依赖任何上层包；注册、密码、Web 层单向依赖它。
 
-**Tech Stack:** Java 21、Spring Boot 4.1.0、Spring Security / Spring Authorization Server 7.1.0、PostgreSQL 16、Flyway 12、Thymeleaf、JUnit 5、Testcontainers 2.0.5、Playwright。
+**Tech Stack:** Java 17、Spring Boot 4.1.0、Spring Security / Spring Authorization Server 7.1.0、PostgreSQL 16、Flyway 12、Thymeleaf、JUnit 5、Testcontainers 2.0.5、Playwright。
 
 配套规格书：`docs/superpowers/specs/2026-07-29-unified-login-design.md`
 
@@ -15,7 +15,7 @@
 以下约束对**每一个** Task 都生效，实现时不得违反：
 
 - **TDD 铁律**：先写测试 → 运行并亲眼看到失败 → 写最小实现 → 运行确认通过 → 提交。不允许先写实现后补测试。
-- **Java 版本**：21（`<java.version>21</java.version>`）。
+- **Java 版本**：17（`<java.version>17</java.version>`）。这是开发机既有的 JDK，也是 Spring Boot 4.1 的最低要求版本。**不要为本项目升级或切换 JDK**——开发机上其他项目依赖当前环境。
 - **Spring Boot 版本**：`4.1.0`。Spring Security 与 Spring Authorization Server 的版本由它统一管理为 `7.1.0`，**不要在 pom 中写死这两个版本号**。
 - **⚠ 包重定位（照旧文档写会编译失败）**：Spring Authorization Server 并入 Spring Security 7 后，两个配置类换了包：
   - `org.springframework.security.config.annotation.web.configurers.oauth2.server.authorization.OAuth2AuthorizationServerConfigurer`
@@ -102,7 +102,9 @@ e2e/                                            Playwright 端到端用例
 - Consumes: 无（首个任务）
 - Produces: `PostgresTestConfig`（供后续所有集成测试 `@Import`）；数据库表 `app_user`
 
-- [ ] **Step 1: 创建 pom.xml**
+- [ ] **Step 1: 创建 pom.xml 并生成 Maven wrapper**
+
+先写下面的 `auth-server/pom.xml`，然后在 `auth-server/` 目录下执行 `mvn -N wrapper:wrapper` 生成 `mvnw`、`mvnw.cmd` 与 `.mvn/wrapper/`。后续所有步骤都用 `./mvnw` 而非 `mvn`，以锁定构建工具版本。生成后把 wrapper 文件一并纳入版本控制。
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
@@ -124,7 +126,7 @@ e2e/                                            Playwright 端到端用例
     <name>unified-login-auth-server</name>
 
     <properties>
-        <java.version>21</java.version>
+        <java.version>17</java.version>
         <bouncycastle.version>1.85</bouncycastle.version>
     </properties>
 
@@ -373,7 +375,7 @@ Expected: PASS，两个测试均通过
 - [ ] **Step 9: 提交**
 
 ```bash
-git add auth-server/pom.xml auth-server/src
+git add auth-server/pom.xml auth-server/mvnw auth-server/mvnw.cmd auth-server/.mvn auth-server/src
 git commit -m "feat(auth-server): 搭建项目骨架并建立 app_user 表
 
 引入 Spring Boot 4.1 与授权服务器 starter，接入 PostgreSQL 与
@@ -3256,7 +3258,7 @@ test('密码错误时提示信息不透露账号是否存在', async ({ page }) 
 
 ## 前置
 
-- Java 21、Maven、Node 22+、pnpm、Docker（供 Testcontainers 使用）
+- Java 17、Maven、Node 22+、pnpm、Docker（供 Testcontainers 使用）
 - 本地 PostgreSQL：`docker run --rm -e POSTGRES_DB=unified_login -e POSTGRES_USER=unified_login -e POSTGRES_PASSWORD=unified_login -p 5432:5432 postgres:16-alpine`
 
 ## 启动
