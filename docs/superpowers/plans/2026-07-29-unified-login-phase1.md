@@ -1624,6 +1624,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.security.core.userdetails.UsernameNotFoundException;
 
@@ -1639,6 +1640,9 @@ class AppUserDetailsServiceTest {
 
     @Autowired
     private RegistrationService registrationService;
+
+    @Autowired
+    private JdbcTemplate jdbcTemplate;
 
     @Test
     void loadsUserByEmail() {
@@ -1657,6 +1661,18 @@ class AppUserDetailsServiceTest {
         UserDetails details = userDetailsService.loadUserByUsername("Case-Details@Example.COM");
 
         assertThat(details.getUsername()).isEqualTo("case-details@example.com");
+    }
+
+    @Test
+    void disabledUserIsMappedAsDisabled() {
+        registrationService.register("disabled-details@example.com", "a valid password");
+        // 领域模型尚无禁用入口（管理后台在后续阶段），测试用 SQL 直接翻转状态，不新增生产代码
+        jdbcTemplate.update("UPDATE app_user SET status = 'DISABLED' WHERE email = ?",
+                "disabled-details@example.com");
+
+        UserDetails details = userDetailsService.loadUserByUsername("disabled-details@example.com");
+
+        assertThat(details.isEnabled()).isFalse();
     }
 
     @Test
@@ -1736,7 +1752,7 @@ public class AppUserDetailsService implements UserDetailsService {
 - [ ] **Step 4: 运行测试确认通过**
 
 Run: `cd auth-server && ./mvnw test -Dtest=AppUserDetailsServiceTest`
-Expected: PASS，4 个测试全部通过
+Expected: PASS，5 个测试全部通过
 
 - [ ] **Step 5: 写失败的登录流程测试**
 
@@ -1808,6 +1824,18 @@ class LoginFlowTest {
     @Test
     void unknownEmailFailsIdenticallyToWrongPassword() throws Exception {
         mockMvc.perform(formLogin("/login").user("ghost@example.com").password("a valid password"))
+                .andExpect(unauthenticated())
+                .andExpect(redirectedUrl("/login?error"));
+    }
+
+    @Test
+    void disabledAccountFailsIdenticallyToWrongPassword() throws Exception {
+        String email = "login-disabled@example.com";
+        registrationService.register(email, "a valid password");
+        jdbcTemplate.update("UPDATE app_user SET status = 'DISABLED' WHERE email = ?", email);
+
+        // 密码正确但账号被禁用：对外表现必须与密码错误完全一致，否则泄漏「账号存在但被禁用」
+        mockMvc.perform(formLogin("/login").user(email).password("a valid password"))
                 .andExpect(unauthenticated())
                 .andExpect(redirectedUrl("/login?error"));
     }
@@ -1916,7 +1944,7 @@ public class SecurityConfig {
 - [ ] **Step 9: 运行测试确认通过**
 
 Run: `cd auth-server && ./mvnw test -Dtest=LoginFlowTest`
-Expected: PASS，6 个测试全部通过
+Expected: PASS，7 个测试全部通过
 
 - [ ] **Step 10: 提交**
 
