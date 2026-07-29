@@ -3936,8 +3936,12 @@ public class LoginAttemptService {
                 .maximumSize(MAX_TRACKED_KEYS)
                 .ticker(ticker)
                 .build();
+        // ⚠ 这里必须用 expireAfterCreate 而不是 expireAfterWrite：
+        // expireAfterWrite 会让每次尝试都把窗口顺延一分钟，于是持续敲门的 IP 永远等不到窗口
+        // 结束——共用出口 IP 的正常用户会被无限期挡在门外，与规格书「每分钟 20 次」的语义不符。
+        // 窗口必须从本窗口内第一次尝试起算。
         this.attemptsByIp = Caffeine.newBuilder()
-                .expireAfterWrite(IP_WINDOW)
+                .expireAfter(Expiry.creating((String ip, Integer attempts) -> IP_WINDOW))
                 .maximumSize(MAX_TRACKED_KEYS)
                 .ticker(ticker)
                 .build();
@@ -4246,11 +4250,9 @@ public class SecurityConfig {
         return Ticker.systemTicker();
     }
 
-    /** 显式声明，确保认证成功与失败事件一定被发布，限流的计数不依赖自动配置的默认行为。 */
-    @Bean
-    public AuthenticationEventPublisher authenticationEventPublisher(ApplicationEventPublisher publisher) {
-        return new DefaultAuthenticationEventPublisher(publisher);
-    }
+    // 不要声明 AuthenticationEventPublisher bean：Spring Boot 4.1 的 SecurityAutoConfiguration
+    // 已经提供了 DefaultAuthenticationEventPublisher，再声明一个只是冗余。
+    // 事件是否真的发布，由集成测试断言真实终态来保证，不靠多写一个 bean 求心安。
 }
 ```
 
