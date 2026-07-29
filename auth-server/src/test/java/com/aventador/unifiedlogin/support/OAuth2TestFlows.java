@@ -1,5 +1,7 @@
 package com.aventador.unifiedlogin.support;
 
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
 import org.springframework.mock.web.MockHttpSession;
 import org.springframework.security.oauth2.core.AuthorizationGrantType;
 import org.springframework.security.oauth2.core.ClientAuthenticationMethod;
@@ -19,8 +21,6 @@ import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.UUID;
-import java.util.regex.Pattern;
-import java.util.regex.Matcher;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestBuilders.formLogin;
@@ -30,6 +30,8 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 public final class OAuth2TestFlows {
+
+    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
     public static final String CLIENT_ID = "demo-web-a";
     public static final String REDIRECT_URI = "http://localhost:5173/callback";
@@ -109,37 +111,15 @@ public final class OAuth2TestFlows {
     }
 
     /**
-     * 从令牌响应中取出某个字段的值。支持字符串/数字/布尔字段。
+     * 从令牌响应中取出某个字段的值。用 Jackson 解析 JSON。
      */
     public static String jsonField(String json, String field) {
-        String pattern = "\"" + field + "\":";
-        int idx = json.indexOf(pattern);
-        assertThat(idx).as("响应中应包含字段 %s", field).isGreaterThanOrEqualTo(0);
-
-        int valueStart = idx + pattern.length();
-        // 跳过空格
-        while (valueStart < json.length() && Character.isWhitespace(json.charAt(valueStart))) {
-            valueStart++;
-        }
-
-        char firstChar = json.charAt(valueStart);
-        if (firstChar == '"') {
-            // 字符串值：找到闭合引号
-            int endIndex = valueStart + 1;
-            while (endIndex < json.length()) {
-                if (json.charAt(endIndex) == '"' && (endIndex == 0 || json.charAt(endIndex - 1) != '\\')) {
-                    return json.substring(valueStart + 1, endIndex);
-                }
-                endIndex++;
-            }
-            throw new AssertionError("字段 " + field + " 的字符串值没有闭合引号");
-        } else {
-            // 非字符串值：提取直到逗号或右花括号
-            int endIndex = valueStart;
-            while (endIndex < json.length() && json.charAt(endIndex) != ',' && json.charAt(endIndex) != '}') {
-                endIndex++;
-            }
-            return json.substring(valueStart, endIndex).trim();
+        try {
+            JsonNode node = OBJECT_MAPPER.readTree(json).get(field);
+            assertThat(node).as("响应中应包含字段 %s", field).isNotNull();
+            return node.asText();
+        } catch (Exception e) {
+            throw new AssertionError("响应不是合法 JSON: " + json, e);
         }
     }
 
