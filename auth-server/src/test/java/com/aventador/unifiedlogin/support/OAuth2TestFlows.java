@@ -1,7 +1,9 @@
 package com.aventador.unifiedlogin.support;
 
+import org.springframework.mock.web.MockHttpSession;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
+
 import org.springframework.web.util.UriComponentsBuilder;
 
 import java.net.URI;
@@ -11,7 +13,8 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestBuilders.formLogin;
+import static org.springframework.security.test.web.servlet.response.SecurityMockMvcResultMatchers.authenticated;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -51,10 +54,27 @@ public final class OAuth2TestFlows {
         return params;
     }
 
-    /** 以已登录用户身份走一次授权端点，返回回调地址中的一次性授权码。 */
-    public static String authorizeAndExtractCode(MockMvc mockMvc, String userEmail) throws Exception {
+    /**
+     * 走真实表单登录并返回会话。
+     *
+     * **不能用 `.with(user(...))` 替代**：那样造出的主体缺少 Spring Security 7 的
+     * FactorGrantedAuthority，而框架签发 token 时要从它推导认证时间，
+     * 会抛 "authenticationTime cannot be null"。必须走真实登录链路。
+     */
+    public static MockHttpSession login(MockMvc mockMvc, String email, String rawPassword) throws Exception {
+        MvcResult result = mockMvc.perform(formLogin("/login").user(email).password(rawPassword))
+                .andExpect(authenticated())
+                .andReturn();
+
+        MockHttpSession session = (MockHttpSession) result.getRequest().getSession(false);
+        assertThat(session).as("登录后应存在会话").isNotNull();
+        return session;
+    }
+
+    /** 以已登录会话走一次授权端点，返回回调地址中的一次性授权码。 */
+    public static String authorizeAndExtractCode(MockMvc mockMvc, MockHttpSession session) throws Exception {
         MvcResult result = mockMvc.perform(get(authorizeUri(validAuthorizeParams()))
-                        .with(user(userEmail)))
+                        .session(session))
                 .andExpect(status().is3xxRedirection())
                 .andReturn();
 

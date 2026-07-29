@@ -11,7 +11,6 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
-import org.springframework.security.test.context.support.WithMockUser;
 import org.springframework.test.web.servlet.MockMvc;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -30,11 +29,12 @@ class JwtClaimsConfigTest {
     @Autowired
     private JwtDecoder jwtDecoder;
 
+    private static final String PASSWORD = "a valid password";
+
     @Test
-    @WithMockUser(username = "claims-sub@example.com")
     void accessTokenSubjectIsUserIdNotEmail() throws Exception {
         String email = "claims-sub@example.com";
-        AppUser user = registrationService.register(email, "a valid password");
+        AppUser user = registrationService.register(email, PASSWORD);
 
         Jwt jwt = decodeAccessToken(email);
 
@@ -43,10 +43,9 @@ class JwtClaimsConfigTest {
     }
 
     @Test
-    @WithMockUser(username = "claims-email@example.com")
     void accessTokenCarriesEmailClaim() throws Exception {
         String email = "claims-email@example.com";
-        registrationService.register(email, "a valid password");
+        registrationService.register(email, PASSWORD);
 
         Jwt jwt = decodeAccessToken(email);
 
@@ -54,10 +53,9 @@ class JwtClaimsConfigTest {
     }
 
     @Test
-    @WithMockUser(username = "claims-noroles@example.com")
     void accessTokenCarriesNoRoleOrAuthorityClaim() throws Exception {
         String email = "claims-noroles@example.com";
-        registrationService.register(email, "a valid password");
+        registrationService.register(email, PASSWORD);
 
         Jwt jwt = decodeAccessToken(email);
 
@@ -66,13 +64,13 @@ class JwtClaimsConfigTest {
     }
 
     @Test
-    @WithMockUser(username = "claims-idtoken@example.com")
     void idTokenSubjectMatchesAccessTokenSubject() throws Exception {
         String email = "claims-idtoken@example.com";
-        AppUser user = registrationService.register(email, "a valid password");
+        AppUser user = registrationService.register(email, PASSWORD);
 
         String tokenResponse = OAuth2TestFlows.exchangeCode(mockMvc,
-                OAuth2TestFlows.authorizeAndExtractCode(mockMvc, email));
+                OAuth2TestFlows.authorizeAndExtractCode(mockMvc,
+                        OAuth2TestFlows.login(mockMvc, email, PASSWORD)));
 
         Jwt idToken = jwtDecoder.decode(OAuth2TestFlows.jsonField(tokenResponse, "id_token"));
 
@@ -80,8 +78,11 @@ class JwtClaimsConfigTest {
     }
 
     private Jwt decodeAccessToken(String email) throws Exception {
+        // 必须真实登录：.with(user(...)) 造的主体没有 FactorGrantedAuthority，
+        // 框架推导不出认证时间会直接抛异常
         String tokenResponse = OAuth2TestFlows.exchangeCode(mockMvc,
-                OAuth2TestFlows.authorizeAndExtractCode(mockMvc, email));
+                OAuth2TestFlows.authorizeAndExtractCode(mockMvc,
+                        OAuth2TestFlows.login(mockMvc, email, PASSWORD)));
 
         return jwtDecoder.decode(OAuth2TestFlows.jsonField(tokenResponse, "access_token"));
     }
