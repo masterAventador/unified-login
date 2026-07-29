@@ -21,6 +21,9 @@
   - `org.springframework.security.config.annotation.web.configurers.oauth2.server.authorization.OAuth2AuthorizationServerConfigurer`
   - `org.springframework.security.config.annotation.web.configuration.OAuth2AuthorizationServerConfiguration`
   - 其余类（`RegisteredClient`、`AuthorizationServerSettings`、`JdbcRegisteredClientRepository`、`JdbcOAuth2AuthorizationService`）包路径**未变**，仍在 `org.springframework.security.oauth2.server.authorization.*` 下。
+- **⚠ OAuth2AuthorizationServerConfigurer 在 Security 7 无 `authorizationServer()` 静态工厂**：
+  旧 1.x 文档的 `OAuth2AuthorizationServerConfigurer.authorizationServer()` 已不存在，
+  使用无参构造 `new OAuth2AuthorizationServerConfigurer()`。
 - **⚠ 测试注解同样被 Boot 4.x 模块化拆分**：`@AutoConfigureMockMvc` 不在旧包
   `org.springframework.boot.test.autoconfigure.web.servlet`（该包在 4.1 的
   spring-boot-test-autoconfigure 里已不存在），现位于
@@ -2584,8 +2587,10 @@ public class AuthorizationServerConfig {
     @Bean
     @Order(1)
     public SecurityFilterChain authorizationServerSecurityFilterChain(HttpSecurity http) throws Exception {
+        // Spring Security 7 中该类没有 authorizationServer() 静态工厂（那是旧 1.x 的 API），
+        // 用无参构造——照旧文档写静态工厂会编译失败
         OAuth2AuthorizationServerConfigurer authorizationServerConfigurer =
-                OAuth2AuthorizationServerConfigurer.authorizationServer();
+                new OAuth2AuthorizationServerConfigurer();
 
         http
                 .securityMatcher(authorizationServerConfigurer.getEndpointsMatcher())
