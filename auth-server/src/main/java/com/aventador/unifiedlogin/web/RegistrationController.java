@@ -3,6 +3,7 @@ package com.aventador.unifiedlogin.web;
 import com.aventador.unifiedlogin.password.WeakPasswordException;
 import com.aventador.unifiedlogin.registration.EmailAlreadyRegisteredException;
 import com.aventador.unifiedlogin.registration.RegistrationService;
+import com.aventador.unifiedlogin.security.LoginPaths;
 import com.aventador.unifiedlogin.user.InvalidEmailException;
 import org.springframework.stereotype.Controller;
 import org.springframework.ui.Model;
@@ -30,7 +31,7 @@ public class RegistrationController {
                                      Model model) {
         try {
             registrationService.register(email, password);
-            return "redirect:/login?registered";
+            return "redirect:" + LoginPaths.REGISTERED_REDIRECT;
         }
         catch (InvalidEmailException | WeakPasswordException | EmailAlreadyRegisteredException ex) {
             model.addAttribute("errorMessage", ex.getMessage());

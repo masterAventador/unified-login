@@ -84,6 +84,30 @@ class LoginAttemptServiceTest {
     }
 
     @Test
+    void keepsCountingWhenFailuresAreSpacedJustInsideTheWindow() {
+        // 计数窗口随每次失败顺延：只要相邻两次失败没隔满锁定时长，慢慢试也会累计到阈值
+        for (int i = 0; i < 4; i++) {
+            service.recordFailure("user@example.com");
+            ticker.advance(LOCK_DURATION.minusSeconds(1));
+        }
+        service.recordFailure("user@example.com");
+
+        assertThat(service.isLocked("user@example.com")).isTrue();
+    }
+
+    @Test
+    void forgetsEarlierFailuresOnceTheGapExceedsTheWindow() {
+        for (int i = 0; i < 4; i++) {
+            service.recordFailure("user@example.com");
+        }
+
+        ticker.advance(LOCK_DURATION.plusSeconds(1));
+        service.recordFailure("user@example.com");
+
+        assertThat(service.isLocked("user@example.com")).isFalse();
+    }
+
+    @Test
     void successfulLoginClearsFailureCount() {
         for (int i = 0; i < 4; i++) {
             service.recordFailure("user@example.com");

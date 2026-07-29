@@ -1,5 +1,6 @@
 package com.aventador.unifiedlogin.config;
 
+import com.aventador.unifiedlogin.security.LoginPaths;
 import com.nimbusds.jose.jwk.JWKSet;
 import com.nimbusds.jose.jwk.RSAKey;
 import com.nimbusds.jose.jwk.source.ImmutableJWKSet;
@@ -54,7 +55,7 @@ public class AuthorizationServerConfig {
                         .anyRequest().authenticated())
                 .exceptionHandling((exceptions) -> exceptions
                         .defaultAuthenticationEntryPointFor(
-                                new LoginUrlAuthenticationEntryPoint("/login"),
+                                new LoginUrlAuthenticationEntryPoint(LoginPaths.LOGIN),
                                 new MediaTypeRequestMatcher(MediaType.TEXT_HTML)))
                 // 必需：/userinfo 端点自身不解析 Bearer token，靠资源服务器过滤器
                 // 先完成认证。缺这一句该端点对任何合法 token 都返回拒绝

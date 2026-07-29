@@ -8,6 +8,9 @@ public final class LoginPaths {
     /** 账号被锁定时的跳转目标，登录页据此渲染锁定提示。 */
     public static final String LOCKED_REDIRECT = LOGIN + "?locked";
 
+    /** 注册成功后的跳转目标，登录页据此渲染注册成功提示。 */
+    public static final String REGISTERED_REDIRECT = LOGIN + "?registered";
+
     private LoginPaths() {
     }
 }

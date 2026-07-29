@@ -13,12 +13,15 @@ import org.springframework.test.context.support.AbstractTestExecutionListener;
  * {@code MockitoResetTestExecutionListener} 一致。
  *
  * <p>通过 {@code src/test/resources/META-INF/spring.factories} 注册为默认监听器。
+ * 本身的回归保护在 {@link LoginAttemptResetTestExecutionListenerTest}：那两个方法各自用满
+ * 每分钟配额，清零一旦失效就会有一个变红。
  */
 public class LoginAttemptResetTestExecutionListener extends AbstractTestExecutionListener {
 
     @Override
     public void beforeTestMethod(TestContext testContext) {
-        // 切片测试的上下文里没有这个 Bean，跳过即可
+        // 切片测试的上下文里本来就没有这个 Bean，跳过是正确行为而非吞掉异常；
+        // 这里引用的是类型不是 Bean 名，类被改名或删除会直接编译不过，不会无声失效
         testContext.getApplicationContext()
                 .getBeanProvider(LoginAttemptService.class)
                 .ifAvailable(LoginAttemptService::clearAll);

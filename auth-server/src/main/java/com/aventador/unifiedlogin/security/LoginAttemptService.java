@@ -21,10 +21,11 @@ public class LoginAttemptService {
     private static final Duration IP_WINDOW = Duration.ofMinutes(1);
 
     /**
-     * 计数表的容量上限。没有上限时任何人都能靠伪造大量邮箱把内存打满，
-     * 代价是极端情况下最早的计数会被挤掉、锁定提前失效——这里选择保住可用性。
+     * 单张计数表的容量上限。没有上限时任何人都能靠伪造大量邮箱把内存打满，
+     * 代价是撑满以后最早的计数会被挤掉、对应的锁定提前失效——这里选择先保住可用性。
+     * 两张表合计最坏约占几 MB（每条记录是一个字符串键加一个装箱计数，含 Caffeine 节点开销）。
      */
-    private static final int MAX_TRACKED_KEYS = 100_000;
+    private static final int MAX_TRACKED_KEYS = 10_000;
 
     private final LoginRateLimitProperties properties;
     private final Cache<String, Integer> failuresByEmail;
@@ -32,8 +33,11 @@ public class LoginAttemptService {
 
     public LoginAttemptService(LoginRateLimitProperties properties, Ticker ticker) {
         this.properties = properties;
-        // 锁定期从最后一次失败起算：被锁期间的尝试不再计数（见 LoginRateLimitFilter），
-        // 因此最后一次写入就是触发锁定的那一次，锁定时长正好等于配置值
+        // expireAfterWrite 的含义是「距最后一次写入」，因此这里有两层效果：
+        // 一是锁定期从最后一次失败起算——被锁期间的尝试不再计数（见 LoginRateLimitFilter），
+        // 最后一次写入就是触发锁定的那一次，锁定时长正好等于配置值；
+        // 二是失败计数的累计窗口也随每次失败顺延，只要相邻两次失败间隔不超过配置时长，
+        // 哪怕跨几个小时慢慢试满五次也会锁定。方向上偏保守，宁可多锁不可漏锁。
         this.failuresByEmail = Caffeine.newBuilder()
                 .expireAfterWrite(properties.emailLockDuration())
                 .maximumSize(MAX_TRACKED_KEYS)
@@ -72,8 +76,8 @@ public class LoginAttemptService {
     }
 
     /**
-     * 清空全部计数。限流状态是进程内单例，测试之间不清零会互相干扰；
-     * 运维需要手动解除误锁时也走这里。
+     * 清空全部计数。目前只有测试隔离监听器调用它——限流状态是进程内单例且被所有集成测试共用，
+     * 不在测试方法之间清零会让计数跨测试类累加。尚未对外暴露任何运维接口。
      */
     public void clearAll() {
         failuresByEmail.invalidateAll();

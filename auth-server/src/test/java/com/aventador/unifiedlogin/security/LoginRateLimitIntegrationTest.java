@@ -8,6 +8,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.context.annotation.Import;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.web.servlet.MockMvc;
 
 import java.time.Duration;
@@ -41,6 +42,9 @@ class LoginRateLimitIntegrationTest {
 
     @Autowired
     private RegistrationService registrationService;
+
+    @Autowired
+    private JdbcTemplate jdbcTemplate;
 
     // 计数在每个测试方法前由 LoginAttemptResetTestExecutionListener 统一清零，
     // 否则同一个类里靠前的用例消耗掉的尝试次数会把靠后的用例顶过 IP 上限
@@ -80,6 +84,21 @@ class LoginRateLimitIntegrationTest {
     void locksUnknownEmailToo() throws Exception {
         // 防枚举：不存在的邮箱如果永远不会被锁，攻击者只要看会不会锁就知道账号在不在
         String email = "ghost-lockout@example.com";
+
+        failFiveTimes(email);
+
+        mockMvc.perform(formLogin("/login").user(email).password(PASSWORD))
+                .andExpect(unauthenticated())
+                .andExpect(redirectedUrl(LOCKED_URL));
+    }
+
+    @Test
+    void locksDisabledAccountToo() throws Exception {
+        // 防枚举：禁用账号走的是 DisabledException 而非 BadCredentialsException，
+        // 若这条分支不计数，攻击者只要看第六次是 ?locked 还是 ?error 就能认出「真实存在且已禁用」的账号
+        String email = "disabled-lockout@example.com";
+        register(email);
+        jdbcTemplate.update("UPDATE app_user SET status = 'DISABLED' WHERE email = ?", email);
 
         failFiveTimes(email);
 
@@ -186,10 +205,12 @@ class LoginRateLimitIntegrationTest {
         mockMvc.perform(formLogin("/login").user(email).password(PASSWORD))
                 .andExpect(redirectedUrl(LOCKED_URL));
 
-        // 跟着跳转地址走一遍，确认用户真的看得到锁定提示，而不只是 URL 上多了个参数
+        // 跟着跳转地址走一遍，确认用户真的看得到锁定提示，而不只是 URL 上多了个参数；
+        // 文案里的分钟数必须与本环境配置的 15m 一致，配套的 LoginLockNoticeDurationTest 用另一份配置验证它确实跟着配置走
         mockMvc.perform(get("/login").param("locked", ""))
                 .andExpect(status().isOk())
-                .andExpect(content().string(containsString(LOCKED_NOTICE_MARKER)));
+                .andExpect(content().string(containsString(LOCKED_NOTICE_MARKER)))
+                .andExpect(content().string(containsString(LOCK_DURATION.toMinutes() + " 分钟")));
     }
 
     @Test
