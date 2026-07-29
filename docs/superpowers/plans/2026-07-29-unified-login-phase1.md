@@ -44,6 +44,14 @@
   需要 test 依赖 `spring-boot-starter-webmvc-test`（Task 5 起已加入 pom）。
 - **⚠ Testcontainers 2.x 坐标与包路径均已更名**：artifactId 必须带 `testcontainers-` 前缀（`testcontainers-postgresql`、`testcontainers-junit-jupiter`），容器类在 `org.testcontainers.postgresql.PostgreSQLContainer` 且**不再是泛型类**（不要写 `<?>`）。
 - **⚠ BouncyCastle 必须显式声明版本**：Spring Boot 4.1 不管理它，而 `Argon2PasswordEncoder` 运行时依赖它。使用 `org.bouncycastle:bcprov-jdk18on:1.85`。
+- **⚠ 公有客户端默认拿不到 refresh token，必须自定义生成器覆盖**：
+  `OAuth2RefreshTokenGenerator.generate()` 在「授权类型 `authorization_code` +
+  客户端认证方式 `NONE`」时直接返回 `null`。我们所有 client 都是 public client，
+  因此**默认配置下令牌响应里根本没有 `refresh_token` 字段**，且不报任何错——
+  只有断言该字段存在的测试才能发现。必须注册自定义 `OAuth2TokenGenerator`
+  （见 Task 9 步骤 6-9）。注意：一旦自定义了 `OAuth2TokenGenerator` bean，
+  框架就不会再自动把 `OAuth2TokenCustomizer` bean 装到 `JwtGenerator` 上，
+  **必须手动 `jwtGenerator.setJwtCustomizer(...)`**，否则 sub/email 定制会静默失效。
 - **Java 包名**：`com.aventador.unifiedlogin`。
 - **Argon2id 参数**：`saltLength=16, hashLength=32, parallelism=1, memory=19456, iterations=2`，即 `new Argon2PasswordEncoder(16, 32, 1, 19456, 2)`。
 - **密码长度**：8–64 字符，不限制字符类型。
@@ -2826,9 +2834,9 @@ git commit -m "feat(config): 启用 OIDC 协议端点并持久化签名密钥
 ```java
 package com.aventador.unifiedlogin.support;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
+// ⚠ Spring Boot 4.1 用的是 Jackson 3，包名是 tools.jackson.*，不是旧的 com.fasterxml.jackson.*
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
 import org.springframework.mock.web.MockHttpSession;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
@@ -2933,15 +2941,12 @@ public final class OAuth2TestFlows {
      * 后者只能取带引号的字符串字段，遇到数字/布尔字段会误报「字段不存在」，
      * 把后续任务的排查方向带偏。
      */
+    // Jackson 3 的异常全部是非受检的，这里不需要（也不应该）包 try/catch：
+    // JSON 解析不了时让原始异常直接抛出，比包装成 AssertionError 更好排查
     public static String jsonField(String json, String field) {
-        try {
-            JsonNode node = OBJECT_MAPPER.readTree(json).path(field);
-            assertThat(node.isMissingNode()).as("响应中应包含字段 %s", field).isFalse();
-            return node.asText();
-        }
-        catch (JsonProcessingException ex) {
-            throw new AssertionError("令牌响应不是合法 JSON：" + json, ex);
-        }
+        JsonNode node = OBJECT_MAPPER.readTree(json).path(field);
+        assertThat(node.isMissingNode()).as("响应中应包含字段 %s", field).isFalse();
+        return node.asText();
     }
 
     /** 用 refresh token 换一组新令牌，返回响应 JSON 原文。 */
@@ -3147,12 +3152,139 @@ public class JwtClaimsConfig {
 Run: `cd auth-server && ./mvnw test -Dtest=JwtClaimsConfigTest`
 Expected: PASS，5 个测试全部通过
 
-- [ ] **Step 6: 运行全部测试**
+- [ ] **Step 6: 写失败的刷新令牌测试**
+
+Task 9 的定制对 refresh token 换发的 access token 同样必须生效——这条分支若失守，
+用户续期后拿到的 `sub` 会退回邮箱，产品侧外键当场断裂。
+
+先在 `OAuth2TestFlows` 里补一个刷新辅助方法：
+
+```java
+    /** 用 refresh token 换一组新令牌，返回响应 JSON 原文。 */
+    public static String refreshTokens(MockMvc mockMvc, String refreshToken) throws Exception {
+        return mockMvc.perform(post("/oauth2/token")
+                        .param("grant_type", "refresh_token")
+                        .param("client_id", CLIENT_ID)
+                        .param("refresh_token", refreshToken))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString(StandardCharsets.UTF_8);
+    }
+```
+
+再在 `JwtClaimsConfigTest` 里加用例。**不允许**用 `try/catch` 或 `if (refreshToken != null)`
+把断言包起来——那样在 `refresh_token` 缺失时测试会静默通过，等于没测：
+
+```java
+    @Test
+    void refreshedAccessTokenKeepsUserIdSubjectAndEmail() throws Exception {
+        String email = "claims-refresh@example.com";
+        AppUser user = registrationService.register(email, PASSWORD);
+
+        String code = OAuth2TestFlows.authorizeAndExtractCode(mockMvc,
+                OAuth2TestFlows.login(mockMvc, email, PASSWORD));
+        String initialTokenResponse = OAuth2TestFlows.exchangeCode(mockMvc, code);
+
+        String initialAccessToken = OAuth2TestFlows.jsonField(initialTokenResponse, "access_token");
+        String refreshToken = OAuth2TestFlows.jsonField(initialTokenResponse, "refresh_token");
+
+        String refreshedTokenResponse = OAuth2TestFlows.refreshTokens(mockMvc, refreshToken);
+        String refreshedAccessToken = OAuth2TestFlows.jsonField(refreshedTokenResponse, "access_token");
+
+        // 必须确认换到的是新令牌，否则下面的断言可能只是把旧响应又验了一遍
+        assertThat(refreshedAccessToken).isNotEqualTo(initialAccessToken);
+
+        Jwt refreshedJwt = jwtDecoder.decode(refreshedAccessToken);
+        assertThat(refreshedJwt.getSubject()).isEqualTo(user.getId().toString());
+        assertThat(refreshedJwt.getClaimAsString("email")).isEqualTo(email);
+    }
+```
+
+- [ ] **Step 7: 运行测试确认失败**
+
+Run: `cd auth-server && ./mvnw test -Dtest=JwtClaimsConfigTest#refreshedAccessTokenKeepsUserIdSubjectAndEmail`
+Expected: FAIL，失败信息为 `[响应中应包含字段 refresh_token] Expecting actual not to be null`
+
+这个失败是**预期内的真实缺陷**，不是测试写错了：框架默认不给公有客户端签发
+refresh token（见 Global Constraints 中的对应条目），下一步就是修它。
+
+- [ ] **Step 8: 自定义令牌生成器，恢复对公有客户端签发 refresh token**
+
+在 `JwtClaimsConfig` 中追加。这里没有可复用的现成实现——框架的
+`OAuth2RefreshTokenGenerator` 把公有客户端拦截写死在方法内部且无开关，
+只能照抄其余行为、去掉那一条判断：
+
+```java
+    /**
+     * 自定义令牌生成器。**存在的唯一理由**是绕开框架对公有客户端的 refresh token 拦截：
+     * `OAuth2RefreshTokenGenerator` 在「authorization_code + ClientAuthenticationMethod.NONE」
+     * 时直接返回 null，而本系统所有接入方都必须是公有客户端，照默认走会拿不到 refresh token。
+     * OAuth 2.1 允许公有客户端使用 refresh token，前提是必须轮转——本系统已启用
+     * 一次性轮转（reuseRefreshTokens(false)），满足该前提。
+     *
+     * 注意：一旦自定义此 bean，框架不再自动装配 OAuth2TokenCustomizer，
+     * 必须在这里手动 setJwtCustomizer，否则 sub/email 定制会静默失效。
+     */
+    @Bean
+    public OAuth2TokenGenerator<? extends OAuth2Token> tokenGenerator(
+            JWKSource<SecurityContext> jwkSource,
+            OAuth2TokenCustomizer<JwtEncodingContext> jwtCustomizer) {
+        JwtGenerator jwtGenerator = new JwtGenerator(new NimbusJwtEncoder(jwkSource));
+        jwtGenerator.setJwtCustomizer(jwtCustomizer);
+        return new DelegatingOAuth2TokenGenerator(
+                jwtGenerator,
+                new OAuth2AccessTokenGenerator(),
+                new PublicClientRefreshTokenGenerator());
+    }
+
+    /** 与框架实现逐行等价，仅去掉「公有客户端不发 refresh token」那条拦截。 */
+    private static final class PublicClientRefreshTokenGenerator
+            implements OAuth2TokenGenerator<OAuth2RefreshToken> {
+
+        private static final int TOKEN_BYTE_LENGTH = 96;
+
+        private final StringKeyGenerator keyGenerator =
+                new Base64StringKeyGenerator(Base64.getUrlEncoder().withoutPadding(), TOKEN_BYTE_LENGTH);
+
+        @Override
+        public OAuth2RefreshToken generate(OAuth2TokenContext context) {
+            if (!OAuth2TokenType.REFRESH_TOKEN.equals(context.getTokenType())) {
+                return null;
+            }
+            Instant issuedAt = Instant.now();
+            Instant expiresAt = issuedAt.plus(
+                    context.getRegisteredClient().getTokenSettings().getRefreshTokenTimeToLive());
+            return new OAuth2RefreshToken(keyGenerator.generateKey(), issuedAt, expiresAt);
+        }
+    }
+```
+
+需要补的 import：`com.nimbusds.jose.jwk.source.JWKSource`、`com.nimbusds.jose.proc.SecurityContext`、
+`org.springframework.security.crypto.keygen.Base64StringKeyGenerator`、
+`org.springframework.security.crypto.keygen.StringKeyGenerator`、
+`org.springframework.security.oauth2.core.OAuth2RefreshToken`、
+`org.springframework.security.oauth2.core.OAuth2Token`、
+`org.springframework.security.oauth2.jwt.NimbusJwtEncoder`、
+`org.springframework.security.oauth2.server.authorization.token.*`（`JwtGenerator`、
+`DelegatingOAuth2TokenGenerator`、`OAuth2AccessTokenGenerator`、`OAuth2TokenGenerator`、
+`OAuth2TokenContext`）、`java.time.Instant`、`java.util.Base64`。
+
+- [ ] **Step 9: 运行测试确认通过**
+
+Run: `cd auth-server && ./mvnw test -Dtest=JwtClaimsConfigTest`
+Expected: PASS，5 个测试全部通过
+
+再确认这条新用例确实有区分力：临时把 `jwtGenerator.setJwtCustomizer(jwtCustomizer)`
+注释掉重跑，应看到 `refreshedAccessTokenKeepsUserIdSubjectAndEmail` 因 `sub` 不是 UUID 而失败；
+恢复后再跑一次确认通过。
+
+- [ ] **Step 10: 运行全部测试**
 
 Run: `cd auth-server && ./mvnw test`
 Expected: 全部通过
 
-- [ ] **Step 7: 提交**
+- [ ] **Step 11: 提交**
 
 ```bash
 git add auth-server/src

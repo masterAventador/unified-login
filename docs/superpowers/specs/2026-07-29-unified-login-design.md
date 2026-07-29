@@ -192,6 +192,10 @@ Java 包名为 `com.aventador.unifiedlogin`。
 
 **Refresh token 轮转规则**：每次刷新作废旧 token 并签发新 token。同一个 refresh token 被使用第二次，判定为凭证泄漏，立即撤销该用户全部有效 token，强制重新登录。
 
+**关于公有客户端 Refresh Token 的框架约束与覆盖决策**：Spring Authorization Server 7.1.0 的 `OAuth2RefreshTokenGenerator.generate()` 有一条硬拦截——当「授权类型为 `authorization_code` 且客户端认证方式为 `NONE`」时直接返回 `null`，即**公有客户端拿不到 refresh token**。我们所有接入方（浏览器 SPA、Tauri 桌面端、未来移动端）都必须是公有客户端（无法安全保存密钥），因此该默认行为会让本节的 30 天续期方案完全落空，且失败是静默的：令牌响应里只是没有 `refresh_token` 字段，不报任何错。
+
+**决策**：注册自定义 `OAuth2TokenGenerator`，用一个不含该拦截的 refresh token 生成器替换框架默认实现，恢复对公有客户端签发。这是有意覆盖框架的保守默认，依据是 OAuth 2.1 允许公有客户端使用 refresh token，前提是 token 必须轮转或与发送方绑定——本设计已启用一次性轮转（`reuseRefreshTokens(false)`），满足该前提。自定义生成器除去掉公有客户端拦截外，其余行为（96 字节 Base64URL 随机串、寿命取 `TokenSettings.refreshTokenTimeToLive`）与框架实现保持一致。
+
 **关于 ID Token 寿命的框架约束**：Spring Authorization Server 的 `TokenSettings` 不提供 ID token 存活时间的配置项（只能配签名算法），ID token 的过期时间由 `accessTokenTimeToLive` 决定。因此它必然是 15 分钟，无法单独缩短。这在安全上可接受：ID token 只在登录完成的那一次交互中被前端读取一次，之后即被丢弃，实际暴露窗口远小于名义寿命；且它不被任何接口接受为凭证。
 
 **会话 Cookie 属性**：`HttpOnly`、`Secure`、`SameSite=Lax`、`Domain` 不设置（即仅 `auth` 子域自身可用）。
