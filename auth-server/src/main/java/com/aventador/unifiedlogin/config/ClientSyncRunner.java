@@ -16,7 +16,6 @@ import org.springframework.security.oauth2.server.authorization.settings.TokenSe
 
 import java.time.Duration;
 import java.util.List;
-import java.util.Objects;
 import java.util.UUID;
 
 @Configuration
@@ -40,10 +39,7 @@ public class ClientSyncRunner {
     public ApplicationRunner syncRegisteredClients(RegisteredClientRepository repository,
                                                    UnifiedLoginProperties properties) {
         return (args) -> {
-            // record 构造器绑定在配置节点缺失时得到 null 而非空列表，这里显式归一
-            List<UnifiedLoginProperties.ClientConfig> clients =
-                    Objects.requireNonNullElseGet(properties.clients(), List::of);
-            for (UnifiedLoginProperties.ClientConfig config : clients) {
+            for (UnifiedLoginProperties.ClientConfig config : properties.clientsOrEmpty()) {
                 RegisteredClient existing = repository.findByClientId(config.clientId());
                 String id = (existing != null) ? existing.getId() : UUID.randomUUID().toString();
                 repository.save(build(id, config));
