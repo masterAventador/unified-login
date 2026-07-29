@@ -170,10 +170,12 @@ Java 包名 `com.aventador.unifiedlogin` 为待确认项，评审时可改。
 | --- | --- | --- |
 | Access Token（JWT） | 15 分钟 | 各产品后端本地验签使用。因无法单独撤销，故意做短 |
 | Refresh Token | 30 天 | 一次性使用 + 轮转 |
-| ID Token | 5 分钟 | 仅用于登录完成时确认用户身份，禁止用于调用接口 |
+| ID Token | 15 分钟（跟随 access token） | 仅用于登录完成时确认用户身份，禁止用于调用接口 |
 | 认证中心会话 Cookie | 14 天，滑动续期 | 仅种在 `auth` 子域。它有效即免登生效 |
 
 **Refresh token 轮转规则**：每次刷新作废旧 token 并签发新 token。同一个 refresh token 被使用第二次，判定为凭证泄漏，立即撤销该用户全部有效 token，强制重新登录。
+
+**关于 ID Token 寿命的框架约束**：Spring Authorization Server 的 `TokenSettings` 不提供 ID token 存活时间的配置项（只能配签名算法），ID token 的过期时间由 `accessTokenTimeToLive` 决定。因此它必然是 15 分钟，无法单独缩短。这在安全上可接受：ID token 只在登录完成的那一次交互中被前端读取一次，之后即被丢弃，实际暴露窗口远小于名义寿命；且它不被任何接口接受为凭证。
 
 **会话 Cookie 属性**：`HttpOnly`、`Secure`、`SameSite=Lax`、`Domain` 不设置（即仅 `auth` 子域自身可用）。
 

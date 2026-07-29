@@ -248,10 +248,10 @@
         <h4>Refresh Token</h4>
         <p><b>一次性 + 轮转</b>：每次刷新都作废旧的、发一个新的。同一个 refresh token 被用第二次 → 判定为泄漏，该用户所有 token 立即全部作废</p>
         <div class="bar"><span style="width:100%"></span></div></div></div>
-      <div class="tok"><div class="tok-life">5 分钟</div><div>
+      <div class="tok"><div class="tok-life">15 分钟</div><div>
         <h4>ID Token</h4>
-        <p>只在登录完成那一刻用一次，告诉前端「登录的人是谁」。<b>绝不能拿它去调接口</b></p>
-        <div class="bar"><span style="width:2%"></span></div></div></div>
+        <p>只在登录完成那一刻用一次，告诉前端「登录的人是谁」。<b>绝不能拿它去调接口</b>。寿命由框架绑定为与 access token 相同，无法单独配置</p>
+        <div class="bar"><span style="width:4%"></span></div></div></div>
       <div class="tok"><div class="tok-life">14 天</div><div>
         <h4>认证中心会话 Cookie</h4>
         <p>只种在 <code>auth</code> 子域，各产品拿不到也不需要。它活着 = 免登生效。滑动续期</p>
