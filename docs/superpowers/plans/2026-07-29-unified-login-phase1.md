@@ -2466,30 +2466,26 @@ git commit -m "feat(config): 启用 OIDC 协议端点并持久化签名密钥
 
 **Files:**
 - Create: `auth-server/src/main/java/com/aventador/unifiedlogin/config/JwtClaimsConfig.java`
+- Test: `auth-server/src/test/java/com/aventador/unifiedlogin/support/OAuth2TestFlows.java`
 - Test: `auth-server/src/test/java/com/aventador/unifiedlogin/config/JwtClaimsConfigTest.java`
 
 **Interfaces:**
 - Consumes: `UserService`、`EmailAddress`、`AuthorizationServerConfig`（Task 8）
-- Produces: `OAuth2TokenCustomizer<JwtEncodingContext>` Bean。定制后 access token 与 id token 的 `sub` 均为 `app_user.id` 的字符串形式，并额外携带 `email` claim
+- Produces:
+  - `OAuth2TokenCustomizer<JwtEncodingContext>` Bean。定制后 access token 与 id token 的 `sub` 均为 `app_user.id` 的字符串形式，并额外携带 `email` claim
+  - `OAuth2TestFlows`：测试辅助类，供本任务与 Task 10 共用。静态常量 `CLIENT_ID`、`REDIRECT_URI`、`CODE_VERIFIER`、`CODE_CHALLENGE`；静态方法 `authorizeAndExtractCode(MockMvc, String userEmail): String`、`exchangeCode(MockMvc, String code): String`（返回令牌响应的 JSON 原文）、`jsonField(String json, String field): String`
 
 **为什么必须在阶段一做**：各产品后端将用 `sub` 作为外键关联本地业务数据。若阶段一签发的 `sub` 是邮箱，后续改成 UUID 就是破坏性变更——产品库里已存的关联全部失效，且用户改邮箱会导致身份漂移。UUID 永不变，邮箱会变，所以 `sub` 必须是 UUID。
 
-- [ ] **Step 1: 写失败的测试**
+- [ ] **Step 1: 写共用的测试辅助类**
 
-`auth-server/src/test/java/com/aventador/unifiedlogin/config/JwtClaimsConfigTest.java`
+`auth-server/src/test/java/com/aventador/unifiedlogin/support/OAuth2TestFlows.java`
+
+这是测试基础设施而非生产代码，Task 10 会复用它，因此先建立。PKCE 测试向量取自 RFC 7636 附录 B，固定值避免每次运行重新计算：
 
 ```java
-package com.aventador.unifiedlogin.config;
+package com.aventador.unifiedlogin.support;
 
-import com.aventador.unifiedlogin.PostgresTestConfig;
-import com.aventador.unifiedlogin.registration.RegistrationService;
-import com.aventador.unifiedlogin.user.AppUser;
-import org.junit.jupiter.api.Test;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
-import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 
@@ -2503,15 +2499,99 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+public final class OAuth2TestFlows {
+
+    public static final String CLIENT_ID = "demo-web-a";
+    public static final String REDIRECT_URI = "http://localhost:5173/callback";
+    public static final String CODE_VERIFIER = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+    public static final String CODE_CHALLENGE = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
+
+    private OAuth2TestFlows() {
+    }
+
+    /** 以已登录用户身份走一次授权端点，返回回调地址中的一次性授权码。 */
+    public static String authorizeAndExtractCode(MockMvc mockMvc, String userEmail) throws Exception {
+        MvcResult result = mockMvc.perform(get("/oauth2/authorize")
+                        .param("response_type", "code")
+                        .param("client_id", CLIENT_ID)
+                        .param("redirect_uri", REDIRECT_URI)
+                        .param("scope", "openid")
+                        .param("code_challenge", CODE_CHALLENGE)
+                        .param("code_challenge_method", "S256")
+                        .with(user(userEmail)))
+                .andExpect(status().is3xxRedirection())
+                .andReturn();
+
+        String location = result.getResponse().getRedirectedUrl();
+        assertThat(location).startsWith(REDIRECT_URI);
+
+        return queryParam(location, "code");
+    }
+
+    /** 用授权码换取令牌，返回响应 JSON 原文。仅用于预期成功的场景。 */
+    public static String exchangeCode(MockMvc mockMvc, String code) throws Exception {
+        return mockMvc.perform(post("/oauth2/token")
+                        .param("grant_type", "authorization_code")
+                        .param("client_id", CLIENT_ID)
+                        .param("code", code)
+                        .param("redirect_uri", REDIRECT_URI)
+                        .param("code_verifier", CODE_VERIFIER))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString(StandardCharsets.UTF_8);
+    }
+
+    /** 从令牌响应中取出某个字符串字段的值。 */
+    public static String jsonField(String json, String field) {
+        String marker = "\"" + field + "\":\"";
+        int start = json.indexOf(marker);
+        assertThat(start).as("响应中应包含字段 %s", field).isGreaterThanOrEqualTo(0);
+        start += marker.length();
+        int end = json.indexOf('"', start);
+        return json.substring(start, end);
+    }
+
+    private static String queryParam(String url, String name) {
+        String query = URI.create(url).getQuery();
+        assertThat(query).as("回调地址应带查询参数：%s", url).isNotNull();
+
+        return Arrays.stream(query.split("&"))
+                .map((pair) -> pair.split("=", 2))
+                .filter((parts) -> parts.length == 2 && parts[0].equals(name))
+                .map((parts) -> parts[1])
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("回调地址中没有 " + name + " 参数：" + url));
+    }
+}
+```
+
+- [ ] **Step 2: 写失败的测试**
+
+`auth-server/src/test/java/com/aventador/unifiedlogin/config/JwtClaimsConfigTest.java`
+
+```java
+package com.aventador.unifiedlogin.config;
+
+import com.aventador.unifiedlogin.PostgresTestConfig;
+import com.aventador.unifiedlogin.registration.RegistrationService;
+import com.aventador.unifiedlogin.support.OAuth2TestFlows;
+import com.aventador.unifiedlogin.user.AppUser;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.context.annotation.Import;
+import org.springframework.security.oauth2.jwt.Jwt;
+import org.springframework.security.oauth2.jwt.JwtDecoder;
+import org.springframework.test.web.servlet.MockMvc;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
 @SpringBootTest
 @AutoConfigureMockMvc
 @Import(PostgresTestConfig.class)
 class JwtClaimsConfigTest {
-
-    private static final String CODE_VERIFIER = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
-    private static final String CODE_CHALLENGE = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
-    private static final String CLIENT_ID = "demo-web-a";
-    private static final String REDIRECT_URI = "http://localhost:5173/callback";
 
     @Autowired
     private MockMvc mockMvc;
@@ -2527,8 +2607,7 @@ class JwtClaimsConfigTest {
         String email = "claims-sub@example.com";
         AppUser user = registrationService.register(email, "a valid password");
 
-        String accessToken = obtainAccessToken(email);
-        var jwt = jwtDecoder.decode(accessToken);
+        Jwt jwt = decodeAccessToken(email);
 
         assertThat(jwt.getSubject()).isEqualTo(user.getId().toString());
         assertThat(jwt.getSubject()).isNotEqualTo(email);
@@ -2539,8 +2618,7 @@ class JwtClaimsConfigTest {
         String email = "claims-email@example.com";
         registrationService.register(email, "a valid password");
 
-        String accessToken = obtainAccessToken(email);
-        var jwt = jwtDecoder.decode(accessToken);
+        Jwt jwt = decodeAccessToken(email);
 
         assertThat(jwt.getClaimAsString("email")).isEqualTo(email);
     }
@@ -2550,57 +2628,40 @@ class JwtClaimsConfigTest {
         String email = "claims-noroles@example.com";
         registrationService.register(email, "a valid password");
 
-        String accessToken = obtainAccessToken(email);
-        var jwt = jwtDecoder.decode(accessToken);
+        Jwt jwt = decodeAccessToken(email);
 
         // 规格书要求：认证中心不下发任何角色或权限信息
         assertThat(jwt.getClaims()).doesNotContainKeys("roles", "authorities", "scope_roles");
     }
 
-    private String obtainAccessToken(String email) throws Exception {
-        MvcResult authorizeResult = mockMvc.perform(get("/oauth2/authorize")
-                        .param("response_type", "code")
-                        .param("client_id", CLIENT_ID)
-                        .param("redirect_uri", REDIRECT_URI)
-                        .param("scope", "openid")
-                        .param("code_challenge", CODE_CHALLENGE)
-                        .param("code_challenge_method", "S256")
-                        .with(user(email)))
-                .andExpect(status().is3xxRedirection())
-                .andReturn();
+    @Test
+    void idTokenSubjectMatchesAccessTokenSubject() throws Exception {
+        String email = "claims-idtoken@example.com";
+        AppUser user = registrationService.register(email, "a valid password");
 
-        String code = Arrays.stream(URI.create(authorizeResult.getResponse().getRedirectedUrl()).getQuery().split("&"))
-                .map((pair) -> pair.split("=", 2))
-                .filter((parts) -> parts.length == 2 && parts[0].equals("code"))
-                .map((parts) -> parts[1])
-                .findFirst()
-                .orElseThrow(() -> new AssertionError("回调地址中没有 code 参数"));
+        String tokenResponse = OAuth2TestFlows.exchangeCode(mockMvc,
+                OAuth2TestFlows.authorizeAndExtractCode(mockMvc, email));
 
-        String tokenResponse = mockMvc.perform(post("/oauth2/token")
-                        .param("grant_type", "authorization_code")
-                        .param("client_id", CLIENT_ID)
-                        .param("code", code)
-                        .param("redirect_uri", REDIRECT_URI)
-                        .param("code_verifier", CODE_VERIFIER))
-                .andExpect(status().isOk())
-                .andReturn()
-                .getResponse()
-                .getContentAsString(StandardCharsets.UTF_8);
+        Jwt idToken = jwtDecoder.decode(OAuth2TestFlows.jsonField(tokenResponse, "id_token"));
 
-        String marker = "\"access_token\":\"";
-        int start = tokenResponse.indexOf(marker) + marker.length();
-        int end = tokenResponse.indexOf('"', start);
-        return tokenResponse.substring(start, end);
+        assertThat(idToken.getSubject()).isEqualTo(user.getId().toString());
+    }
+
+    private Jwt decodeAccessToken(String email) throws Exception {
+        String tokenResponse = OAuth2TestFlows.exchangeCode(mockMvc,
+                OAuth2TestFlows.authorizeAndExtractCode(mockMvc, email));
+
+        return jwtDecoder.decode(OAuth2TestFlows.jsonField(tokenResponse, "access_token"));
     }
 }
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [ ] **Step 3: 运行测试确认失败**
 
 Run: `cd auth-server && ./mvnw test -Dtest=JwtClaimsConfigTest`
-Expected: FAIL — `accessTokenSubjectIsUserIdNotEmail` 失败，实际 `sub` 为邮箱；`accessTokenCarriesEmailClaim` 失败，不存在 `email` claim
+Expected: FAIL — `accessTokenSubjectIsUserIdNotEmail` 与 `idTokenSubjectMatchesAccessTokenSubject` 失败（实际 `sub` 为邮箱），`accessTokenCarriesEmailClaim` 失败（不存在 `email` claim）。`accessTokenCarriesNoRoleOrAuthorityClaim` 此时应已通过——它断言的是「不该有的东西没有」
 
-- [ ] **Step 3: 写 JWT 定制配置**
+- [ ] **Step 4: 写 JWT 定制配置**
 
 `auth-server/src/main/java/com/aventador/unifiedlogin/config/JwtClaimsConfig.java`
 
@@ -2648,17 +2709,17 @@ public class JwtClaimsConfig {
 }
 ```
 
-- [ ] **Step 4: 运行测试确认通过**
+- [ ] **Step 5: 运行测试确认通过**
 
 Run: `cd auth-server && ./mvnw test -Dtest=JwtClaimsConfigTest`
-Expected: PASS，3 个测试全部通过
+Expected: PASS，4 个测试全部通过
 
-- [ ] **Step 5: 运行全部测试**
+- [ ] **Step 6: 运行全部测试**
 
 Run: `cd auth-server && ./mvnw test`
 Expected: 全部通过
 
-- [ ] **Step 6: 提交**
+- [ ] **Step 7: 提交**
 
 ```bash
 git add auth-server/src
@@ -2683,7 +2744,7 @@ git commit -m "feat(config): 令牌主体改为用户 ID 并附带邮箱
 
 `auth-server/src/test/java/com/aventador/unifiedlogin/config/AuthorizationCodeFlowTest.java`
 
-用固定的 PKCE 测试向量（取自 RFC 7636 附录 B），避免每次运行重新计算：
+复用 Task 9 建立的 `OAuth2TestFlows`。预期失败的请求需要自行构造，因为辅助类的 `exchangeCode` 断言的是成功路径：
 
 ```java
 package com.aventador.unifiedlogin.config;
@@ -2699,11 +2760,13 @@ import org.springframework.context.annotation.Import;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 
-import java.net.URI;
-import java.nio.charset.StandardCharsets;
-import java.util.Arrays;
-import java.util.Optional;
-
+import static com.aventador.unifiedlogin.support.OAuth2TestFlows.CLIENT_ID;
+import static com.aventador.unifiedlogin.support.OAuth2TestFlows.CODE_CHALLENGE;
+import static com.aventador.unifiedlogin.support.OAuth2TestFlows.CODE_VERIFIER;
+import static com.aventador.unifiedlogin.support.OAuth2TestFlows.REDIRECT_URI;
+import static com.aventador.unifiedlogin.support.OAuth2TestFlows.authorizeAndExtractCode;
+import static com.aventador.unifiedlogin.support.OAuth2TestFlows.exchangeCode;
+import static com.aventador.unifiedlogin.support.OAuth2TestFlows.jsonField;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -2716,10 +2779,6 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @Import(PostgresTestConfig.class)
 class AuthorizationCodeFlowTest {
 
-    private static final String CODE_VERIFIER = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
-    private static final String CODE_CHALLENGE = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
-    private static final String CLIENT_ID = "demo-web-a";
-    private static final String REDIRECT_URI = "http://localhost:5173/callback";
     private static final String USER_EMAIL = "flow@example.com";
 
     @Autowired
@@ -2737,7 +2796,7 @@ class AuthorizationCodeFlowTest {
 
     @Test
     void authenticatedUserExchangesCodeForTokens() throws Exception {
-        String code = obtainAuthorizationCode();
+        String code = authorizeAndExtractCode(mockMvc, USER_EMAIL);
 
         mockMvc.perform(post("/oauth2/token")
                         .param("grant_type", "authorization_code")
@@ -2754,7 +2813,7 @@ class AuthorizationCodeFlowTest {
 
     @Test
     void tokenRequestWithWrongVerifierIsRejected() throws Exception {
-        String code = obtainAuthorizationCode();
+        String code = authorizeAndExtractCode(mockMvc, USER_EMAIL);
 
         mockMvc.perform(post("/oauth2/token")
                         .param("grant_type", "authorization_code")
@@ -2767,15 +2826,9 @@ class AuthorizationCodeFlowTest {
 
     @Test
     void authorizationCodeCannotBeUsedTwice() throws Exception {
-        String code = obtainAuthorizationCode();
+        String code = authorizeAndExtractCode(mockMvc, USER_EMAIL);
 
-        mockMvc.perform(post("/oauth2/token")
-                        .param("grant_type", "authorization_code")
-                        .param("client_id", CLIENT_ID)
-                        .param("code", code)
-                        .param("redirect_uri", REDIRECT_URI)
-                        .param("code_verifier", CODE_VERIFIER))
-                .andExpect(status().isOk());
+        exchangeCode(mockMvc, code);
 
         mockMvc.perform(post("/oauth2/token")
                         .param("grant_type", "authorization_code")
@@ -2816,20 +2869,8 @@ class AuthorizationCodeFlowTest {
 
     @Test
     void refreshTokenRotatesAndOldOneIsRejected() throws Exception {
-        String code = obtainAuthorizationCode();
-
-        String tokenResponse = mockMvc.perform(post("/oauth2/token")
-                        .param("grant_type", "authorization_code")
-                        .param("client_id", CLIENT_ID)
-                        .param("code", code)
-                        .param("redirect_uri", REDIRECT_URI)
-                        .param("code_verifier", CODE_VERIFIER))
-                .andExpect(status().isOk())
-                .andReturn()
-                .getResponse()
-                .getContentAsString(StandardCharsets.UTF_8);
-
-        String firstRefreshToken = extractJsonString(tokenResponse, "refresh_token");
+        String tokenResponse = exchangeCode(mockMvc, authorizeAndExtractCode(mockMvc, USER_EMAIL));
+        String firstRefreshToken = jsonField(tokenResponse, "refresh_token");
 
         mockMvc.perform(post("/oauth2/token")
                         .param("grant_type", "refresh_token")
@@ -2844,46 +2885,6 @@ class AuthorizationCodeFlowTest {
                         .param("client_id", CLIENT_ID)
                         .param("refresh_token", firstRefreshToken))
                 .andExpect(status().isBadRequest());
-    }
-
-    private String obtainAuthorizationCode() throws Exception {
-        MvcResult result = mockMvc.perform(get("/oauth2/authorize")
-                        .param("response_type", "code")
-                        .param("client_id", CLIENT_ID)
-                        .param("redirect_uri", REDIRECT_URI)
-                        .param("scope", "openid")
-                        .param("code_challenge", CODE_CHALLENGE)
-                        .param("code_challenge_method", "S256")
-                        .with(user(USER_EMAIL)))
-                .andExpect(status().is3xxRedirection())
-                .andReturn();
-
-        String location = result.getResponse().getRedirectedUrl();
-        assertThat(location).startsWith(REDIRECT_URI);
-
-        return queryParam(location, "code")
-                .orElseThrow(() -> new AssertionError("回调地址中没有 code 参数：" + location));
-    }
-
-    private static Optional<String> queryParam(String url, String name) {
-        String query = URI.create(url).getQuery();
-        if (query == null) {
-            return Optional.empty();
-        }
-        return Arrays.stream(query.split("&"))
-                .map((pair) -> pair.split("=", 2))
-                .filter((parts) -> parts.length == 2 && parts[0].equals(name))
-                .map((parts) -> parts[1])
-                .findFirst();
-    }
-
-    private static String extractJsonString(String json, String field) {
-        String marker = "\"" + field + "\":\"";
-        int start = json.indexOf(marker);
-        assertThat(start).as("响应中应包含字段 %s", field).isGreaterThanOrEqualTo(0);
-        start += marker.length();
-        int end = json.indexOf('"', start);
-        return json.substring(start, end);
     }
 }
 ```
