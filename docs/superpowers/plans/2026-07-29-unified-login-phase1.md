@@ -832,7 +832,9 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
 
+import java.time.Instant;
 import java.util.Optional;
+import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -886,6 +888,18 @@ class UserServiceTest {
     void returnsEmptyForUnknownEmail() {
         assertThat(userService.findByEmail(new EmailAddress("unknown@example.com"))).isEmpty();
     }
+
+    @Test
+    void brandNewEntityReportsIsNewUntilPersisted() {
+        // Persistable 契约：新实体 save 前 isNew=true（使 save 走 persist 而非 merge），持久化后翻转
+        AppUser user = new AppUser(UUID.randomUUID(), new EmailAddress("persistable@example.com"),
+                "hash-value", Instant.now());
+        assertThat(user.isNew()).isTrue();
+
+        repository.save(user);
+
+        assertThat(user.isNew()).isFalse();
+    }
 }
 ```
 
@@ -917,17 +931,28 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
 import jakarta.persistence.Id;
+import jakarta.persistence.PostLoad;
+import jakarta.persistence.PostPersist;
 import jakarta.persistence.Table;
+import jakarta.persistence.Transient;
+import org.springframework.data.domain.Persistable;
 
 import java.time.Instant;
 import java.util.UUID;
 
 @Entity
 @Table(name = "app_user")
-public class AppUser {
+public class AppUser implements Persistable<UUID> {
 
     @Id
     private UUID id;
+
+    /**
+     * ID 由应用层生成而非数据库自增，Spring Data 无法用「id 是否为 null」判定新旧实体。
+     * 不实现 Persistable 时 save() 会走 merge()，对每个新实体多打一次冗余 SELECT。
+     */
+    @Transient
+    private boolean isNew = false;
 
     @Column(nullable = false, unique = true)
     private String email;
@@ -958,9 +983,10 @@ public class AppUser {
         // JPA 要求的无参构造器
     }
 
-    AppUser(UUID id, String email, String passwordHash, Instant now) {
+    // 构造器收 EmailAddress 而非裸 String：「落库小写」由类型系统保证，不靠调用方自觉
+    AppUser(UUID id, EmailAddress email, String passwordHash, Instant now) {
         this.id = id;
-        this.email = email;
+        this.email = email.value();
         this.passwordHash = passwordHash;
         this.status = UserStatus.ACTIVE;
         this.emailVerified = true;
@@ -968,10 +994,23 @@ public class AppUser {
         this.passwordChangedAt = now;
         this.createdAt = now;
         this.updatedAt = now;
+        this.isNew = true;
     }
 
+    @Override
     public UUID getId() {
         return id;
+    }
+
+    @Override
+    public boolean isNew() {
+        return isNew;
+    }
+
+    @PostPersist
+    @PostLoad
+    void markNotNew() {
+        this.isNew = false;
     }
 
     public String getEmail() {
@@ -1051,9 +1090,13 @@ public class UserService {
         this.repository = repository;
     }
 
+    /**
+     * 并发注册同一邮箱撞唯一索引时，原样抛出 DataIntegrityViolationException——
+     * 本层不掌握业务语义，由注册服务负责转译为领域异常。
+     */
     @Transactional
     public AppUser createUser(EmailAddress email, String passwordHash) {
-        AppUser user = new AppUser(UUID.randomUUID(), email.value(), passwordHash, Instant.now());
+        AppUser user = new AppUser(UUID.randomUUID(), email, passwordHash, Instant.now());
         return repository.save(user);
     }
 
@@ -1072,7 +1115,7 @@ public class UserService {
 - [ ] **Step 5: 运行测试确认通过**
 
 Run: `cd auth-server && ./mvnw test -Dtest=UserServiceTest`
-Expected: PASS，5 个测试全部通过。`ddl-auto: validate` 会同时校验实体与 Task 1 建的表结构一致
+Expected: PASS，6 个测试全部通过。`ddl-auto: validate` 会同时校验实体与 Task 1 建的表结构一致
 
 - [ ] **Step 6: 提交**
 
@@ -3797,6 +3840,8 @@ export default defineConfig({
   testDir: './tests',
   timeout: 60_000,
   use: {
+    // 复用本机已安装的 Google Chrome，不下载独立 Chromium
+    channel: 'chrome',
     headless: true,
     baseURL: 'http://localhost:5173',
   },
@@ -3901,8 +3946,10 @@ test('密码错误时提示信息不透露账号是否存在', async ({ page }) 
 ## 端到端验收
 
 ```bash
-cd e2e && pnpm install && pnpm exec playwright install chromium && pnpm test
+cd e2e && pnpm install && pnpm test
 ```
+
+配置已用 `channel: "chrome"` 复用本机 Google Chrome，**不要执行 `playwright install`**。
 
 E2E 的全部用例都从同一个地址发起登录，反复重跑容易撞上每分钟 20 次的地址限流。
 跑 E2E 时用环境变量把该阈值调高即可：
@@ -3929,7 +3976,7 @@ UNIFIED_LOGIN_LOGIN_RATE_LIMIT_MAXATTEMPTSPERIPPERMINUTE=1000 ./mvnw spring-boot
 
 依次启动 PostgreSQL、认证中心、demo-web-a，然后：
 
-Run: `cd e2e && pnpm install && pnpm exec playwright install chromium && pnpm test`
+Run: `cd e2e && pnpm install && pnpm test`（配置已指定 `channel: 'chrome'` 复用本机 Chrome，不执行任何 `playwright install`）
 Expected: 3 个用例全部 PASS
 
 - [ ] **Step 7: 停止本地服务**
