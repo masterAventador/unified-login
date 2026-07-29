@@ -3480,6 +3480,12 @@ git commit -m "feat(config): 令牌主体改为用户 ID 并附带邮箱
 需要在测试配置里注册第二个客户端。本任务已有客户端相关的验收场景，一并补齐：
 注册一个不含 `refresh_token` 授权类型的测试客户端，断言它拿 refresh token 换发时被拒。
 
+**⚠ 这条用例不能按字面写**：如果让 B 客户端拿 A 客户端的 refresh token 去刷新，测的是
+框架的**令牌归属校验**（`OAuth2RefreshTokenAuthenticationProvider` 强制授权记录的 client
+与请求方一致），它先于授权类型校验生效——把自定义 provider 的校验整段删掉，结果仍是
+400 `invalid_grant`，用例毫无区分力。正确写法是让同一个客户端**先成功刷新一次**，
+再摘掉它的 `refresh_token` 授权类型，然后用同一个 refresh token 再刷一次断言被拒。
+
 **另一个需要在本任务确认的框架行为**：授权码换取令牌时**完全不带** `code_verifier`
 （而非带错值）的请求，返回的是 302 跳登录页而不是 400 `invalid_grant`——因为没有任何
 内置转换器匹配得上，请求在客户端认证阶段就被判为未认证。结果仍是拒绝签发，安全上没问题，
@@ -3599,12 +3605,25 @@ class AuthorizationCodeFlowTest {
 
     @Test
     void authorizationRequestWithoutPkceIsRejected() throws Exception {
+        // ⚠ 缺 PKCE 得到的是 302 而非 400：框架的
+        // OAuth2AuthorizationCodeRequestAuthenticationValidator 只对 client_id /
+        // redirect_uri 这类「回调地址本身不可信」的错误才清空 redirectUri 直接返回 400；
+        // code_challenge 缺失属于可安全回传的错误，按 RFC 6749 §4.1.2.1 经回调带 error 返回。
+        // 所以这条用例要断言的是「跳回调、带 error、且不带 code」，不是 400。
         Map<String, String> params = validAuthorizeParams();
         params.remove("code_challenge");
         params.remove("code_challenge_method");
 
-        mockMvc.perform(get(authorizeUri(params)).session(session))
-                .andExpect(status().isBadRequest());
+        MvcResult result = mockMvc.perform(get(authorizeUri(params)).session(session))
+                .andExpect(status().is3xxRedirection())
+                .andReturn();
+
+        String location = result.getResponse().getRedirectedUrl();
+        assertThat(location).startsWith(REDIRECT_URI);
+        assertThat(location).contains("error=");
+        // 关键断言：绝不能把授权码发出去。只断言「有 error」的话，
+        // 万一将来 requireProofKey 失效、回调里同时带上 code，这条用例照样绿。
+        assertThat(location).doesNotContain("code=");
     }
 
     @Test
@@ -3659,7 +3678,7 @@ Run: `cd auth-server && ./mvnw test -Dtest=AuthorizationCodeFlowTest`
 Expected: 7 个测试全部 PASS。
 
 若出现失败，按以下对照排查，**不要放宽断言**：
-- `authorizationRequestWithoutPkceIsRejected` 失败 → Task 7 的 `requireProofKey(true)` 未生效
+- `authorizationRequestWithoutPkceIsRejected` 回调里带出了 `code` → Task 7 的 `requireProofKey(true)` 未生效（注意：该用例的失败形态是「回调带 code」而不是「状态码不是 400」，缺 PKCE 本来就返回 302）
 - `refreshTokenRotatesAndOldOneIsRejected` 最后一步返回 200 → Task 7 的 `reuseRefreshTokens(false)` 未生效
 - `redirectUriOutsideWhitelistIsRejectedWithoutRedirecting` 发生了重定向 → 回调白名单配置有误，属于开放重定向漏洞，必须修复
 - 所有测试报 404 → Task 8 的授权服务器过滤链未生效
