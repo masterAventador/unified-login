@@ -48,6 +48,9 @@ public class JwtClaimsConfig {
                 return;
             }
 
+            // 两类令牌由同一密钥签名且共享身份声明，必须用标准 typ 让资源服务器拒绝 ID Token。
+            context.getJwsHeader().type(isAccessToken ? JwtTokenTypes.ACCESS_TOKEN : JwtTokenTypes.ID_TOKEN);
+
             // 注意：刷新令牌授权时 principal 是首次登录时序列化进 oauth2_authorization 表的
             // 快照，最长可在 refresh token 的 30 天寿命内被反复复用。因此这里的查找 key 是
             // 「登录时刻的邮箱」而非当前邮箱——将来实现「修改邮箱」功能时必须同步处理这里
