@@ -64,6 +64,8 @@ class AuthorizationCodeFlowTest {
     /** 机密客户端，用来验证「认证方式含 NONE」那道校验。 */
     private static final String CONFIDENTIAL_CLIENT = "test-confidential";
 
+    private static final String OTHER_PUBLIC_CLIENT = "test-other-public";
+
     /** 与 demo-web-a 一致的公有客户端设置，保证测试客户端走的是同一条产品路径。 */
     private static final ClientSettings PUBLIC_CLIENT_SETTINGS = ClientSettings.builder()
             .requireProofKey(true)
@@ -347,6 +349,38 @@ class AuthorizationCodeFlowTest {
     }
 
     /**
+     * 甲客户端拿到的 refresh token，乙客户端拿去换不出任何东西。
+     *
+     * <p>守的是令牌归属：refresh token 与签发它的客户端绑定，换个 client_id 报上来必须被拒。
+     * 这条此前只在一次人工排查中验证过，没有留下回归网——而「验证过但没人守着」正是本项目
+     * 反复栽跟头的形态，所以固化成常驻用例。
+     */
+    @Test
+    void refreshTokenIssuedToOneClientCannotBeUsedByAnother() throws Exception {
+        saveClient(OTHER_PUBLIC_CLIENT, (builder) -> builder
+                .clientAuthenticationMethod(ClientAuthenticationMethod.NONE)
+                .authorizationGrantType(AuthorizationGrantType.AUTHORIZATION_CODE)
+                .authorizationGrantType(AuthorizationGrantType.REFRESH_TOKEN)
+                .clientSettings(PUBLIC_CLIENT_SETTINGS)
+                .tokenSettings(ROTATING_TOKEN_SETTINGS));
+
+        // 令牌属于默认客户端
+        String victimRefreshToken = jsonField(
+                exchangeCode(mockMvc, authorizeAndExtractCode(mockMvc, session)), "refresh_token");
+
+        mockMvc.perform(post("/oauth2/token")
+                        .param("grant_type", "refresh_token")
+                        .param("client_id", OTHER_PUBLIC_CLIENT)
+                        .param("refresh_token", victimRefreshToken))
+                .andExpect(status().is4xxClientError())
+                .andExpect(jsonPath("$.access_token").doesNotExist())
+                .andExpect(jsonPath("$.refresh_token").doesNotExist());
+
+        // 被盗用未遂不该连累受害者：原客户端仍能正常续期
+        assertThat(jsonField(refreshTokens(mockMvc, victimRefreshToken), "access_token")).isNotBlank();
+    }
+
+    /**
      * 清掉本类注册的测试专用客户端。
      *
      * <p>所有测试类共用同一个库，这两个客户端会残留到整个套件结束：一个停在被摘掉刷新授权的
@@ -356,15 +390,15 @@ class AuthorizationCodeFlowTest {
     @AfterAll
     static void removeTestOnlyClients(@Autowired JdbcTemplate jdbcTemplate) {
         jdbcTemplate.update("DELETE FROM oauth2_authorization WHERE registered_client_id IN "
-                        + "(SELECT id FROM oauth2_registered_client WHERE client_id IN (?, ?))",
-                CLIENT_WITHOUT_REFRESH_GRANT, CONFIDENTIAL_CLIENT);
-        jdbcTemplate.update("DELETE FROM oauth2_registered_client WHERE client_id IN (?, ?)",
-                CLIENT_WITHOUT_REFRESH_GRANT, CONFIDENTIAL_CLIENT);
+                        + "(SELECT id FROM oauth2_registered_client WHERE client_id IN (?, ?, ?))",
+                CLIENT_WITHOUT_REFRESH_GRANT, CONFIDENTIAL_CLIENT, OTHER_PUBLIC_CLIENT);
+        jdbcTemplate.update("DELETE FROM oauth2_registered_client WHERE client_id IN (?, ?, ?)",
+                CLIENT_WITHOUT_REFRESH_GRANT, CONFIDENTIAL_CLIENT, OTHER_PUBLIC_CLIENT);
 
         // 清理必须自证：静默失效的清理和没写清理是一回事
         assertThat(jdbcTemplate.queryForObject(
-                "SELECT COUNT(*) FROM oauth2_registered_client WHERE client_id IN (?, ?)",
-                Integer.class, CLIENT_WITHOUT_REFRESH_GRANT, CONFIDENTIAL_CLIENT)).isZero();
+                "SELECT COUNT(*) FROM oauth2_registered_client WHERE client_id IN (?, ?, ?)",
+                Integer.class, CLIENT_WITHOUT_REFRESH_GRANT, CONFIDENTIAL_CLIENT, OTHER_PUBLIC_CLIENT)).isZero();
     }
 
     /**
