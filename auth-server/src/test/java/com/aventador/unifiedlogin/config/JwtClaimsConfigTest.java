@@ -4,6 +4,8 @@ import com.aventador.unifiedlogin.PostgresTestConfig;
 import com.aventador.unifiedlogin.registration.RegistrationService;
 import com.aventador.unifiedlogin.support.OAuth2TestFlows;
 import com.aventador.unifiedlogin.user.AppUser;
+import com.nimbusds.jose.jwk.source.JWKSource;
+import com.nimbusds.jose.proc.SecurityContext;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
@@ -13,12 +15,16 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.mock.web.MockHttpSession;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
+import org.springframework.security.oauth2.jwt.JwtException;
+import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
+import org.springframework.security.oauth2.jose.jws.SignatureAlgorithm;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -37,6 +43,9 @@ class JwtClaimsConfigTest {
 
     @Autowired
     private JwtDecoder jwtDecoder;
+
+    @Autowired
+    private JWKSource<SecurityContext> jwkSource;
 
     @Autowired
     private JdbcTemplate jdbcTemplate;
@@ -198,9 +207,38 @@ class JwtClaimsConfigTest {
                 OAuth2TestFlows.authorizeAndExtractCode(mockMvc,
                         OAuth2TestFlows.login(mockMvc, email, PASSWORD)));
 
-        Jwt idToken = jwtDecoder.decode(OAuth2TestFlows.jsonField(tokenResponse, "id_token"));
+        Jwt idToken = decodeIdToken(OAuth2TestFlows.jsonField(tokenResponse, "id_token"));
 
         assertThat(idToken.getSubject()).isEqualTo(user.getId().toString());
+    }
+
+    @Test
+    void resourceServerDecoderRejectsIdToken() throws Exception {
+        String email = "claims-idtoken-bearer@example.com";
+        registrationService.register(email, PASSWORD);
+
+        String tokenResponse = OAuth2TestFlows.exchangeCode(mockMvc,
+                OAuth2TestFlows.authorizeAndExtractCode(mockMvc,
+                        OAuth2TestFlows.login(mockMvc, email, PASSWORD)));
+        String idToken = OAuth2TestFlows.jsonField(tokenResponse, "id_token");
+
+        assertThatThrownBy(() -> jwtDecoder.decode(idToken))
+                .isInstanceOf(JwtException.class);
+    }
+
+    @Test
+    void accessAndIdTokensUseDistinctStandardTokenTypes() throws Exception {
+        String email = "claims-token-types@example.com";
+        registrationService.register(email, PASSWORD);
+
+        String tokenResponse = OAuth2TestFlows.exchangeCode(mockMvc,
+                OAuth2TestFlows.authorizeAndExtractCode(mockMvc,
+                        OAuth2TestFlows.login(mockMvc, email, PASSWORD)));
+        Jwt accessToken = jwtDecoder.decode(OAuth2TestFlows.jsonField(tokenResponse, "access_token"));
+        Jwt idToken = decodeIdToken(OAuth2TestFlows.jsonField(tokenResponse, "id_token"));
+
+        assertThat(accessToken.getHeaders()).containsEntry("typ", "at+jwt");
+        assertThat(idToken.getHeaders()).containsEntry("typ", "JWT");
     }
 
     private Jwt decodeAccessToken(String email) throws Exception {
@@ -211,5 +249,12 @@ class JwtClaimsConfigTest {
                         OAuth2TestFlows.login(mockMvc, email, PASSWORD)));
 
         return jwtDecoder.decode(OAuth2TestFlows.jsonField(tokenResponse, "access_token"));
+    }
+
+    private Jwt decodeIdToken(String token) {
+        return NimbusJwtDecoder.withJwkSource(jwkSource)
+                .jwsAlgorithm(SignatureAlgorithm.RS256)
+                .build()
+                .decode(token);
     }
 }

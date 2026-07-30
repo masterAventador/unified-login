@@ -5,8 +5,8 @@ from typing import Any
 import httpx
 import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
-from jwt.algorithms import RSAAlgorithm
 
+from tests.support import rsa_jwk
 from unified_login.jwks import JwksCache, JwksError
 
 
@@ -46,16 +46,6 @@ def jwks_response(*keys: dict[str, Any], status_code: int = 200) -> httpx.Respon
         json={"keys": list(keys)},
         request=request,
     )
-
-
-def rsa_jwk(kid: str) -> tuple[dict[str, Any], rsa.RSAPublicKey]:
-    public_key = rsa.generate_private_key(
-        public_exponent=65537,
-        key_size=2048,
-    ).public_key()
-    jwk = RSAAlgorithm.to_jwk(public_key, as_dict=True)
-    jwk.update({"kid": kid, "use": "sig", "alg": "RS256"})
-    return jwk, public_key
 
 
 @pytest.mark.asyncio
