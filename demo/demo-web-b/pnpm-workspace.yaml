@@ -1,0 +1,4 @@
+# pnpm 11 起默认不执行依赖的安装脚本，未显式放行时 `pnpm install` 直接以非零退出。
+# vite 依赖 esbuild 的安装脚本落地平台二进制，故在此放行。
+allowBuilds:
+  esbuild: true

@@ -98,3 +98,8 @@ export function isLoggedIn(): boolean {
 export function currentUser(): string | null {
   return idTokenEmail
 }
+
+export function logout(): void {
+  accessToken = null
+  idTokenEmail = null
+}

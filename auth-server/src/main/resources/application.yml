@@ -44,3 +44,7 @@ unified-login:
       client-name: Demo Web A
       redirect-uris:
         - http://localhost:5173/callback
+    - client-id: demo-web-b
+      client-name: Demo Web B
+      redirect-uris:
+        - http://localhost:5174/callback
