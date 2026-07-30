@@ -199,12 +199,18 @@ class TokenEndpointCorsTest {
 
         mockMvc.perform(options(ADMIN_ENDPOINT)
                         .header(HttpHeaders.ORIGIN, REGISTERED_ORIGIN)
+                        .header(HttpHeaders.ACCESS_CONTROL_REQUEST_METHOD, "GET")
+                        .header(HttpHeaders.ACCESS_CONTROL_REQUEST_HEADERS, HttpHeaders.AUTHORIZATION))
+                .andExpect(header().doesNotExist("Access-Control-Allow-Origin"));
+
+        mockMvc.perform(options(ADMIN_ENDPOINT)
+                        .header(HttpHeaders.ORIGIN, ADMIN_ORIGIN)
                         .header(HttpHeaders.ACCESS_CONTROL_REQUEST_METHOD, "DELETE")
                         .header(HttpHeaders.ACCESS_CONTROL_REQUEST_HEADERS, HttpHeaders.AUTHORIZATION))
                 .andExpect(header().doesNotExist("Access-Control-Allow-Origin"));
 
         mockMvc.perform(options(ADMIN_ENDPOINT)
-                        .header(HttpHeaders.ORIGIN, REGISTERED_ORIGIN)
+                        .header(HttpHeaders.ORIGIN, ADMIN_ORIGIN)
                         .header(HttpHeaders.ACCESS_CONTROL_REQUEST_METHOD, "GET")
                         .header(HttpHeaders.ACCESS_CONTROL_REQUEST_HEADERS, "X-Unlisted-Header"))
                 .andExpect(header().doesNotExist("Access-Control-Allow-Origin"));

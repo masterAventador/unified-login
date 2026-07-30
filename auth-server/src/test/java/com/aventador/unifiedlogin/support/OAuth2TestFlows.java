@@ -54,10 +54,15 @@ public final class OAuth2TestFlows {
 
     /** 同上，指定客户端。用于需要第二个客户端参与的场景。 */
     public static Map<String, String> validAuthorizeParams(String clientId) {
+        return validAuthorizeParams(clientId, REDIRECT_URI);
+    }
+
+    /** 同上，同时指定客户端与其精确登记的回调地址。 */
+    public static Map<String, String> validAuthorizeParams(String clientId, String redirectUri) {
         Map<String, String> params = new LinkedHashMap<>();
         params.put("response_type", "code");
         params.put("client_id", clientId);
-        params.put("redirect_uri", REDIRECT_URI);
+        params.put("redirect_uri", redirectUri);
         params.put("scope", "openid");
         params.put("code_challenge", CODE_CHALLENGE);
         params.put("code_challenge_method", "S256");
@@ -89,13 +94,23 @@ public final class OAuth2TestFlows {
     /** 同上，指定客户端。 */
     public static String authorizeAndExtractCode(MockMvc mockMvc, MockHttpSession session, String clientId)
             throws Exception {
-        MvcResult result = mockMvc.perform(get(authorizeUri(validAuthorizeParams(clientId)))
+        return authorizeAndExtractCode(mockMvc, session, clientId, REDIRECT_URI);
+    }
+
+    /** 同上，同时指定客户端与其精确登记的回调地址。 */
+    public static String authorizeAndExtractCode(
+            MockMvc mockMvc,
+            MockHttpSession session,
+            String clientId,
+            String redirectUri)
+            throws Exception {
+        MvcResult result = mockMvc.perform(get(authorizeUri(validAuthorizeParams(clientId, redirectUri)))
                         .session(session))
                 .andExpect(status().is3xxRedirection())
                 .andReturn();
 
         String location = result.getResponse().getRedirectedUrl();
-        assertThat(location).startsWith(REDIRECT_URI);
+        assertThat(location).startsWith(redirectUri);
 
         return queryParam(location, "code");
     }
@@ -107,11 +122,21 @@ public final class OAuth2TestFlows {
 
     /** 同上，指定客户端。 */
     public static String exchangeCode(MockMvc mockMvc, String code, String clientId) throws Exception {
+        return exchangeCode(mockMvc, code, clientId, REDIRECT_URI);
+    }
+
+    /** 同上，同时指定客户端与其精确登记的回调地址。 */
+    public static String exchangeCode(
+            MockMvc mockMvc,
+            String code,
+            String clientId,
+            String redirectUri)
+            throws Exception {
         return mockMvc.perform(post("/oauth2/token")
                         .param("grant_type", "authorization_code")
                         .param("client_id", clientId)
                         .param("code", code)
-                        .param("redirect_uri", REDIRECT_URI)
+                        .param("redirect_uri", redirectUri)
                         .param("code_verifier", CODE_VERIFIER))
                 .andExpect(status().isOk())
                 .andReturn()

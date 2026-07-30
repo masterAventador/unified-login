@@ -31,6 +31,10 @@ class PlatformAdminGuardTest {
 
     private static final String ADMIN_RESPONSE = "platform-admin-only";
 
+    private static final String ADMIN_CLIENT_ID = "admin-web";
+
+    private static final String ADMIN_REDIRECT_URI = "http://localhost:5175/callback";
+
     @Autowired
     private MockMvc mockMvc;
 
@@ -58,13 +62,31 @@ class PlatformAdminGuardTest {
         assertThat(jdbcTemplate.update(
                 "UPDATE app_user SET is_platform_admin = true WHERE email = ?", email))
                 .isEqualTo(1);
-        String accessToken = issueAccessTokenForExistingUser(email);
+        String accessToken = issueAccessTokenForExistingUser(
+                email, ADMIN_CLIENT_ID, ADMIN_REDIRECT_URI);
 
         mockMvc.perform(get("/admin/probe")
                         .header("Authorization", "Bearer " + accessToken)
                         .accept(MediaType.APPLICATION_JSON))
                 .andExpect(status().isOk())
                 .andExpect(content().string(ADMIN_RESPONSE));
+    }
+
+    @Test
+    void platformAdminBearerTokenForAnotherClientCannotAccessAdminRoutes() throws Exception {
+        String email = "wrong-audience-platform-admin-probe@example.com";
+        registrationService.register(email, PASSWORD);
+        assertThat(jdbcTemplate.update(
+                "UPDATE app_user SET is_platform_admin = true WHERE email = ?", email))
+                .isEqualTo(1);
+        String accessToken = issueAccessTokenForExistingUser(
+                email, OAuth2TestFlows.CLIENT_ID, OAuth2TestFlows.REDIRECT_URI);
+
+        mockMvc.perform(get("/admin/probe")
+                        .header("Authorization", "Bearer " + accessToken)
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isForbidden())
+                .andExpect(content().string(not(containsString(ADMIN_RESPONSE))));
     }
 
     @Test
@@ -93,15 +115,22 @@ class PlatformAdminGuardTest {
 
     private String issueAccessToken(String email) throws Exception {
         registrationService.register(email, PASSWORD);
-        return issueAccessTokenForExistingUser(email);
+        return issueAccessTokenForExistingUser(
+                email, OAuth2TestFlows.CLIENT_ID, OAuth2TestFlows.REDIRECT_URI);
     }
 
-    private String issueAccessTokenForExistingUser(String email) throws Exception {
+    private String issueAccessTokenForExistingUser(
+            String email,
+            String clientId,
+            String redirectUri)
+            throws Exception {
         String tokenResponse = OAuth2TestFlows.exchangeCode(
                 mockMvc,
                 OAuth2TestFlows.authorizeAndExtractCode(
-                        mockMvc,
-                        OAuth2TestFlows.login(mockMvc, email, PASSWORD)));
+                        mockMvc, OAuth2TestFlows.login(mockMvc, email, PASSWORD),
+                        clientId, redirectUri),
+                clientId,
+                redirectUri);
         return OAuth2TestFlows.jsonField(tokenResponse, "access_token");
     }
 

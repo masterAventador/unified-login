@@ -1,5 +1,6 @@
 package com.aventador.unifiedlogin.config;
 
+import com.aventador.unifiedlogin.admin.AdminClient;
 import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -56,7 +57,9 @@ public class TokenEndpointCorsConfig {
         tokenEndpoint.setMaxAge(PREFLIGHT_CACHE_TTL);
 
         CorsConfiguration adminApi = new CorsConfiguration();
-        adminApi.setAllowedOrigins(allowedOrigins);
+        // 管理 API 只供管理后台调用。普通产品即使也是已登记客户端，也不应获得浏览器
+        // 跨域读取管理响应的能力；真正的权限边界仍由 PlatformAdminGuard 的 audience 校验守住。
+        adminApi.setAllowedOrigins(registeredClientOrigins(properties, AdminClient.CLIENT_ID));
         adminApi.setAllowedMethods(List.of(HttpMethod.GET.name(), HttpMethod.POST.name()));
         adminApi.setAllowedHeaders(List.of(HttpHeaders.AUTHORIZATION, HttpHeaders.CONTENT_TYPE));
         adminApi.setMaxAge(PREFLIGHT_CACHE_TTL);
@@ -71,7 +74,15 @@ public class TokenEndpointCorsConfig {
     }
 
     private static List<String> registeredClientOrigins(UnifiedLoginProperties properties) {
+        return registeredClientOrigins(properties, null);
+    }
+
+    private static List<String> registeredClientOrigins(
+            UnifiedLoginProperties properties,
+            String requiredClientId) {
         return properties.clientsOrEmpty().stream()
+                .filter((client) -> requiredClientId == null
+                        || requiredClientId.equals(client.clientId()))
                 .map(UnifiedLoginProperties.ClientConfig::redirectUris)
                 .filter(Objects::nonNull)
                 .flatMap(List::stream)

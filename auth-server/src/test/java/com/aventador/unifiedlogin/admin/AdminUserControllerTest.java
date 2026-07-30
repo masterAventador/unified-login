@@ -45,6 +45,10 @@ class AdminUserControllerTest {
 
     private static final String NEW_PASSWORD = "a newer valid password";
 
+    private static final String ADMIN_CLIENT_ID = "admin-web";
+
+    private static final String ADMIN_REDIRECT_URI = "http://localhost:5175/callback";
+
     @Autowired
     private MockMvc mockMvc;
 
@@ -421,14 +425,26 @@ class AdminUserControllerTest {
         assertThat(jdbcTemplate.update(
                 "UPDATE app_user SET is_platform_admin = true WHERE id = ?", user.getId()))
                 .isEqualTo(1);
-        return new AdminIdentity(user.getId(), issueTokens(email, PASSWORD).accessToken());
+        return new AdminIdentity(user.getId(),
+                issueTokens(email, PASSWORD, ADMIN_CLIENT_ID, ADMIN_REDIRECT_URI).accessToken());
     }
 
     private IssuedTokens issueTokens(String email, String password) throws Exception {
+        return issueTokens(email, password, OAuth2TestFlows.CLIENT_ID, OAuth2TestFlows.REDIRECT_URI);
+    }
+
+    private IssuedTokens issueTokens(
+            String email,
+            String password,
+            String clientId,
+            String redirectUri)
+            throws Exception {
         MockHttpSession session = OAuth2TestFlows.login(mockMvc, email, password);
         String response = OAuth2TestFlows.exchangeCode(
                 mockMvc,
-                OAuth2TestFlows.authorizeAndExtractCode(mockMvc, session));
+                OAuth2TestFlows.authorizeAndExtractCode(mockMvc, session, clientId, redirectUri),
+                clientId,
+                redirectUri);
         return new IssuedTokens(
                 OAuth2TestFlows.jsonField(response, "access_token"),
                 OAuth2TestFlows.jsonField(response, "refresh_token"));
