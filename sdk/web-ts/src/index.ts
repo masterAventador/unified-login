@@ -85,6 +85,10 @@ export interface WebAuthClientConfig {
   readonly redirectUri: string
 }
 
+export interface WebAuthLoginOptions {
+  readonly prompt?: 'login'
+}
+
 export type AuthStateChangeListener = (authenticated: boolean) => void
 
 export default class WebAuthClient {
@@ -122,7 +126,7 @@ export default class WebAuthClient {
     this.silentRenewEnabled = sessionStorage.getItem(this.explicitLogoutKey) === null
   }
 
-  async login(): Promise<void> {
+  async login(options: WebAuthLoginOptions = {}): Promise<void> {
     sessionStorage.setItem(this.explicitLogoutKey, INVALIDATED_AUTH_MARKER)
     let loginSharedAuthGeneration: string
     try {
@@ -148,7 +152,7 @@ export default class WebAuthClient {
       ? this.config.issuer
       : `${this.config.issuer}/`
     const authorizationUrl = new URL('oauth2/authorize', issuerBase)
-    authorizationUrl.search = new URLSearchParams({
+    const authorizationParameters = new URLSearchParams({
       response_type: 'code',
       client_id: this.config.clientId,
       redirect_uri: this.config.redirectUri,
@@ -156,7 +160,11 @@ export default class WebAuthClient {
       state,
       code_challenge: pkce.challenge,
       code_challenge_method: 'S256',
-    }).toString()
+    })
+    if (options.prompt !== undefined) {
+      authorizationParameters.set('prompt', options.prompt)
+    }
+    authorizationUrl.search = authorizationParameters.toString()
 
     location.assign(authorizationUrl.toString())
   }

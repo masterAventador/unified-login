@@ -6,7 +6,11 @@ import java.util.List;
 import java.util.Objects;
 
 @ConfigurationProperties(prefix = "unified-login")
-public record UnifiedLoginProperties(String issuer, String jwtKeyStore, List<ClientConfig> clients) {
+public record UnifiedLoginProperties(
+        String issuer,
+        String jwtKeyStore,
+        List<ClientConfig> clients,
+        BootstrapConfig bootstrap) {
 
     /**
      * 已配置的接入方，配置节点缺失时返回空列表。
@@ -18,6 +22,16 @@ public record UnifiedLoginProperties(String issuer, String jwtKeyStore, List<Cli
         return Objects.requireNonNullElseGet(clients, List::of);
     }
 
+    public List<String> bootstrapAdminEmailsOrEmpty() {
+        if (bootstrap == null) {
+            return List.of();
+        }
+        return Objects.requireNonNullElseGet(bootstrap.adminEmails(), List::of);
+    }
+
     public record ClientConfig(String clientId, String clientName, List<String> redirectUris) {
+    }
+
+    public record BootstrapConfig(List<String> adminEmails) {
     }
 }

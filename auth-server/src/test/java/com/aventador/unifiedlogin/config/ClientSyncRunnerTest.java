@@ -40,6 +40,16 @@ class ClientSyncRunnerTest {
     }
 
     @Test
+    void adminWebIsRegisteredFromConfiguration() {
+        RegisteredClient client = registeredClientRepository.findByClientId("admin-web");
+
+        assertThat(client).isNotNull();
+        assertThat(client.getRedirectUris()).containsExactly("http://localhost:5175/callback");
+        assertThat(client.getClientAuthenticationMethods()).containsExactly(ClientAuthenticationMethod.NONE);
+        assertThat(client.getClientSettings().isRequireProofKey()).isTrue();
+    }
+
+    @Test
     void clientIsPublicAndRequiresPkce() {
         RegisteredClient client = registeredClientRepository.findByClientId("demo-web-a");
 

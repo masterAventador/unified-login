@@ -49,6 +49,8 @@ class TokenEndpointCorsTest {
     /** demo-web-a 回调地址所在的源，即注册在案的接入方来源。 */
     private static final String REGISTERED_ORIGIN = "http://localhost:5173";
 
+    private static final String ADMIN_ORIGIN = "http://localhost:5175";
+
     private static final String UNREGISTERED_ORIGIN = "http://attacker.example.com";
 
     private static final String TOKEN_ENDPOINT = "/oauth2/token";
@@ -174,12 +176,12 @@ class TokenEndpointCorsTest {
     @Test
     void registeredOriginCanPreflightAdminApiWithBearerAndJsonHeaders() throws Exception {
         mockMvc.perform(options(ADMIN_ENDPOINT)
-                        .header(HttpHeaders.ORIGIN, REGISTERED_ORIGIN)
+                        .header(HttpHeaders.ORIGIN, ADMIN_ORIGIN)
                         .header(HttpHeaders.ACCESS_CONTROL_REQUEST_METHOD, "POST")
                         .header(HttpHeaders.ACCESS_CONTROL_REQUEST_HEADERS,
                                 HttpHeaders.AUTHORIZATION + ", " + HttpHeaders.CONTENT_TYPE))
                 .andExpect(status().isOk())
-                .andExpect(header().string("Access-Control-Allow-Origin", REGISTERED_ORIGIN))
+                .andExpect(header().string("Access-Control-Allow-Origin", ADMIN_ORIGIN))
                 .andExpect(header().string("Access-Control-Allow-Methods", containsString("GET")))
                 .andExpect(header().string("Access-Control-Allow-Methods", containsString("POST")))
                 .andExpect(header().string("Access-Control-Allow-Headers", containsString(HttpHeaders.AUTHORIZATION)))
