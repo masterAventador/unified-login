@@ -101,6 +101,16 @@ public class AppUser implements Persistable<UUID> {
         this.updatedAt = changedAt;
     }
 
+    public void disable(Instant changedAt) {
+        this.status = UserStatus.DISABLED;
+        this.updatedAt = changedAt;
+    }
+
+    public void enable(Instant changedAt) {
+        this.status = UserStatus.ACTIVE;
+        this.updatedAt = changedAt;
+    }
+
     public UserStatus getStatus() {
         return status;
     }

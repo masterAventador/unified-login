@@ -18,7 +18,7 @@ import java.util.List;
 import java.util.Objects;
 
 /**
- * 令牌端点的跨域放行。
+ * 浏览器客户端调用令牌端点与管理 API 时的跨域放行。
  *
  * <p>浏览器里的接入方部署在自己的源上（demo-web-a 是 http://localhost:5173），换令牌时
  * 要跨源 POST 到认证中心。缺少 {@code Access-Control-Allow-Origin} 时服务端一切正常——
@@ -46,15 +46,24 @@ public class TokenEndpointCorsConfig {
     public FilterRegistrationBean<CorsFilter> tokenEndpointCorsFilter(
             UnifiedLoginProperties properties,
             AuthorizationServerSettings authorizationServerSettings) {
-        CorsConfiguration configuration = new CorsConfiguration();
-        configuration.setAllowedOrigins(registeredClientOrigins(properties));
-        configuration.setAllowedMethods(List.of(HttpMethod.POST.name()));
+        List<String> allowedOrigins = registeredClientOrigins(properties);
+
+        CorsConfiguration tokenEndpoint = new CorsConfiguration();
+        tokenEndpoint.setAllowedOrigins(allowedOrigins);
+        tokenEndpoint.setAllowedMethods(List.of(HttpMethod.POST.name()));
         // 令牌端点只吃表单参数，放行 Content-Type 足够；多放行一个请求头就多一分被利用的面
-        configuration.setAllowedHeaders(List.of(HttpHeaders.CONTENT_TYPE));
-        configuration.setMaxAge(PREFLIGHT_CACHE_TTL);
+        tokenEndpoint.setAllowedHeaders(List.of(HttpHeaders.CONTENT_TYPE));
+        tokenEndpoint.setMaxAge(PREFLIGHT_CACHE_TTL);
+
+        CorsConfiguration adminApi = new CorsConfiguration();
+        adminApi.setAllowedOrigins(allowedOrigins);
+        adminApi.setAllowedMethods(List.of(HttpMethod.GET.name(), HttpMethod.POST.name()));
+        adminApi.setAllowedHeaders(List.of(HttpHeaders.AUTHORIZATION, HttpHeaders.CONTENT_TYPE));
+        adminApi.setMaxAge(PREFLIGHT_CACHE_TTL);
 
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
-        source.registerCorsConfiguration(authorizationServerSettings.getTokenEndpoint(), configuration);
+        source.registerCorsConfiguration(authorizationServerSettings.getTokenEndpoint(), tokenEndpoint);
+        source.registerCorsConfiguration("/admin/**", adminApi);
 
         FilterRegistrationBean<CorsFilter> registration = new FilterRegistrationBean<>(new CorsFilter(source));
         registration.setOrder(Ordered.HIGHEST_PRECEDENCE);

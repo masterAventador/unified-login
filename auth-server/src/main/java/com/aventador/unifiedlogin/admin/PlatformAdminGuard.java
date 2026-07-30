@@ -2,6 +2,7 @@ package com.aventador.unifiedlogin.admin;
 
 import com.aventador.unifiedlogin.user.AppUser;
 import com.aventador.unifiedlogin.user.AppUserRepository;
+import com.aventador.unifiedlogin.user.UserStatus;
 import org.springframework.security.authentication.AnonymousAuthenticationToken;
 import org.springframework.security.authorization.AuthorizationDecision;
 import org.springframework.security.authorization.AuthorizationManager;
@@ -48,7 +49,7 @@ public class PlatformAdminGuard implements AuthorizationManager<RequestAuthoriza
         }
 
         boolean platformAdmin = findUser(jwt)
-                .map(AppUser::isPlatformAdmin)
+                .map((user) -> user.isPlatformAdmin() && user.getStatus() == UserStatus.ACTIVE)
                 .orElse(false);
         return new AuthorizationDecision(platformAdmin);
     }
