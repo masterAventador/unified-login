@@ -3,7 +3,13 @@ import { expect, type Page } from '@playwright/test'
 export const AUTH_BASE = 'http://localhost:9000'
 export const DEMO_A_BASE = 'http://localhost:5173'
 export const DEMO_B_BASE = 'http://localhost:5174'
+export const ADMIN_BASE = 'http://localhost:5175'
 export const PASSWORD = 'a valid password'
+
+export interface TokenEndpointPayload {
+  readonly accessToken: string
+  readonly refreshToken: string
+}
 
 export function uniqueEmail(): string {
   return `e2e-${Date.now()}-${Math.floor(Math.random() * 10000)}@example.com`
@@ -39,10 +45,14 @@ export async function registerDirectly(page: Page, email: string): Promise<void>
 }
 
 /** 同上，直接提交登录表单。 */
-export async function loginDirectly(page: Page, email: string): Promise<void> {
+export async function loginDirectly(
+  page: Page,
+  email: string,
+  password = PASSWORD,
+): Promise<void> {
   await page.goto(`${AUTH_BASE}/login`)
   const response = await page.request.post(`${AUTH_BASE}/login`, {
-    form: { username: email, password: PASSWORD, _csrf: await csrfToken(page) },
+    form: { username: email, password, _csrf: await csrfToken(page) },
   })
   // 登录失败同样是 200（重新渲染登录页），只有落到 /login?error 之外才算成功。
   // 不断言的话，登录静默失败只会表现为后面某个 toBeVisible() 超时，排查时看不出真正原因
@@ -66,4 +76,94 @@ export async function loginDemoA(page: Page, email: string): Promise<void> {
   await page.click('button[type="submit"]')
   await page.waitForURL(`${DEMO_A_BASE}/**`)
   await expect(page.getByTestId('signed-in-user')).toHaveText(`已登录：${email}`)
+}
+
+export async function loginDemoB(
+  page: Page,
+  email: string,
+  password = PASSWORD,
+): Promise<TokenEndpointPayload> {
+  await page.goto(DEMO_B_BASE)
+  await page.waitForURL(/^http:\/\/localhost:9000\/login/)
+  await page.fill('#username', email)
+  await page.fill('#password', password)
+  const tokenResponsePromise = waitForTokenResponse(page, 'authorization_code')
+  await page.click('button[type="submit"]')
+  const tokens = await tokenPayload(await tokenResponsePromise)
+  await expect(page.getByTestId('signed-in-user')).toHaveText(`已登录：${email}`)
+  return tokens
+}
+
+export async function loginAdminWeb(
+  page: Page,
+  email: string,
+  password = PASSWORD,
+): Promise<TokenEndpointPayload> {
+  await page.goto(ADMIN_BASE)
+  await expect(page.getByTestId('admin-login')).toBeVisible()
+  await page.getByTestId('admin-login').click()
+  await page.waitForURL(/^http:\/\/localhost:9000\/login/)
+  await page.fill('#username', email)
+  await page.fill('#password', password)
+  const tokenResponsePromise = waitForTokenResponse(page, 'authorization_code')
+  await page.click('button[type="submit"]')
+  return tokenPayload(await tokenResponsePromise)
+}
+
+export async function expectLoginRejected(
+  page: Page,
+  email: string,
+  password: string,
+): Promise<void> {
+  await page.goto(`${AUTH_BASE}/login`)
+  await page.fill('#username', email)
+  await page.fill('#password', password)
+  await page.click('button[type="submit"]')
+  await expect(page.getByTestId('login-error')).toHaveText('邮箱或密码不正确')
+}
+
+export function waitForTokenResponse(
+  page: Page,
+  grantType: 'authorization_code' | 'refresh_token',
+) {
+  return page.waitForResponse((response) => {
+    const request = response.request()
+    const requestBody = new URLSearchParams(request.postData() ?? '')
+    const url = new URL(response.url())
+    return url.origin === AUTH_BASE
+      && url.pathname === '/oauth2/token'
+      && request.method() === 'POST'
+      && requestBody.get('grant_type') === grantType
+  })
+}
+
+export async function expectRefreshRejected(
+  page: Page,
+  clientId: string,
+  refreshToken: string,
+): Promise<void> {
+  const response = await page.request.post(`${AUTH_BASE}/oauth2/token`, {
+    form: {
+      grant_type: 'refresh_token',
+      client_id: clientId,
+      refresh_token: refreshToken,
+    },
+  })
+  expect(response.status()).toBe(400)
+  const payload = await response.json() as Record<string, unknown>
+  expect(payload).toMatchObject({ error: 'invalid_grant' })
+  expect(payload).not.toHaveProperty('access_token')
+  expect(payload).not.toHaveProperty('refresh_token')
+}
+
+async function tokenPayload(response: Awaited<ReturnType<typeof waitForTokenResponse>>)
+  : Promise<TokenEndpointPayload> {
+  expect(response.status()).toBe(200)
+  const payload = await response.json() as Record<string, unknown>
+  expect(typeof payload.access_token).toBe('string')
+  expect(typeof payload.refresh_token).toBe('string')
+  return {
+    accessToken: payload.access_token as string,
+    refreshToken: payload.refresh_token as string,
+  }
 }
