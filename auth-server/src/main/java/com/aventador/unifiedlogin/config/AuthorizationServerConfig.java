@@ -65,7 +65,9 @@ public class AuthorizationServerConfig {
                         .anyRequest().authenticated())
                 .exceptionHandling((exceptions) -> exceptions
                         .defaultAuthenticationEntryPointFor(
-                                new LoginUrlAuthenticationEntryPoint(LoginPaths.LOGIN),
+                                new PromptNoneAuthenticationEntryPoint(
+                                        registeredClientRepository,
+                                        new LoginUrlAuthenticationEntryPoint(LoginPaths.LOGIN)),
                                 new MediaTypeRequestMatcher(MediaType.TEXT_HTML)))
                 // 必需：/userinfo 端点自身不解析 Bearer token，靠资源服务器过滤器
                 // 先完成认证。缺这一句该端点对任何合法 token 都返回拒绝
