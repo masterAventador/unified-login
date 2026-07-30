@@ -5,7 +5,12 @@
 target/
 node_modules/
 dist/
+*.tsbuildinfo
+# Playwright 每次运行产生的失败现场与报告，不入库
+test-results/
+playwright-report/
 .DS_Store
 *.log
 .env
 .env.local
+data/
