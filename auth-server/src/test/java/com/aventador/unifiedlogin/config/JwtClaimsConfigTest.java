@@ -10,11 +10,16 @@ import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.mock.web.MockHttpSession;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.MvcResult;
+
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -133,6 +138,48 @@ class JwtClaimsConfigTest {
                         .param("grant_type", "authorization_code")
                         .param("client_id", OAuth2TestFlows.CLIENT_ID)
                         .param("code", code)
+                        .param("redirect_uri", OAuth2TestFlows.REDIRECT_URI)
+                        .param("code_verifier", OAuth2TestFlows.CODE_VERIFIER))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").isNotEmpty())
+                .andExpect(jsonPath("$.access_token").doesNotExist())
+                .andExpect(jsonPath("$.refresh_token").doesNotExist())
+                .andExpect(jsonPath("$.id_token").doesNotExist());
+    }
+
+    /**
+     * 禁用账号后，旧的认证中心会话不能借 prompt=none 静默拿到新令牌。
+     *
+     * <p>Spring Authorization Server 会把首次登录的 principal 快照保存在 HTTP 会话里；
+     * 仅让后续表单登录失败并不能使这个快照失效。这里先证明旧会话仍能走到授权码，再守住
+     * 令牌签发边界，避免已禁用账号持续静默续期。
+     */
+    @Test
+    void disabledAccountCannotExchangeCodeObtainedSilentlyFromExistingSession() throws Exception {
+        String email = "claims-silent-disabled@example.com";
+        registrationService.register(email, PASSWORD);
+        MockHttpSession session = OAuth2TestFlows.login(mockMvc, email, PASSWORD);
+
+        jdbcTemplate.update("UPDATE app_user SET status = 'DISABLED' WHERE email = ?", email);
+
+        Map<String, String> authorizeParams = OAuth2TestFlows.validAuthorizeParams();
+        authorizeParams.put("prompt", "none");
+        authorizeParams.put("state", "silent-disabled-state");
+        MvcResult authorization = mockMvc.perform(
+                        get(OAuth2TestFlows.authorizeUri(authorizeParams)).session(session))
+                .andExpect(status().is3xxRedirection())
+                .andReturn();
+        Map<String, String> callbackParams = OAuth2TestFlows.queryParams(
+                authorization.getResponse().getRedirectedUrl());
+        assertThat(callbackParams)
+                .containsEntry("state", "silent-disabled-state")
+                .containsKey("code")
+                .doesNotContainKey("error");
+
+        mockMvc.perform(post("/oauth2/token")
+                        .param("grant_type", "authorization_code")
+                        .param("client_id", OAuth2TestFlows.CLIENT_ID)
+                        .param("code", callbackParams.get("code"))
                         .param("redirect_uri", OAuth2TestFlows.REDIRECT_URI)
                         .param("code_verifier", OAuth2TestFlows.CODE_VERIFIER))
                 .andExpect(status().isBadRequest())

@@ -1,6 +1,15 @@
 import { createPkcePair } from './pkce'
-import { AuthorizationRequestStore } from './storage'
+import {
+  SilentRenewClient,
+  postSilentRenewError,
+  postSilentRenewSuccess,
+} from './silent-renew'
+import {
+  AuthorizationRequestStore,
+  StateIndexedAuthorizationRequestStore,
+} from './storage'
 import { TokenStore } from './tokens'
+import type { TokenSet } from './tokens'
 
 interface TokenEndpointResponse {
   readonly access_token: string
@@ -51,21 +60,40 @@ export type AuthStateChangeListener = (authenticated: boolean) => void
 
 export default class WebAuthClient {
   private readonly authorizationRequestStore: AuthorizationRequestStore
+  private readonly silentAuthorizationRequestStore: StateIndexedAuthorizationRequestStore
+  private readonly silentRenewClient: SilentRenewClient
+  private readonly explicitLogoutKey: string
   private readonly tokenStore = new TokenStore()
   private readonly authStateListeners = new Set<AuthStateChangeListener>()
   private authenticated = false
   private authGeneration = 0
   private authorizationCallbackInFlight: Promise<string> | null = null
   private refreshInFlight: Promise<string> | null = null
+  private silentRenewEnabled = true
+  private silentRenewInFlight: Promise<string> | null = null
 
   constructor(private readonly config: WebAuthClientConfig) {
+    this.explicitLogoutKey = `${config.clientId}.explicit_logout`
     this.authorizationRequestStore = new AuthorizationRequestStore(
       config.clientId,
       sessionStorage,
     )
+    this.silentAuthorizationRequestStore = new StateIndexedAuthorizationRequestStore(
+      `${config.clientId}.silent`,
+      sessionStorage,
+    )
+    this.silentRenewClient = new SilentRenewClient(
+      config,
+      this.silentAuthorizationRequestStore,
+    )
+    this.silentRenewEnabled = sessionStorage.getItem(this.explicitLogoutKey) !== 'true'
   }
 
   async login(): Promise<void> {
+    sessionStorage.removeItem(this.explicitLogoutKey)
+    this.silentRenewEnabled = true
+    this.silentRenewClient.cancel()
+    this.silentRenewInFlight = null
     const pkce = await createPkcePair()
     const state = crypto.randomUUID()
     this.authorizationRequestStore.save({ state, verifier: pkce.verifier })
@@ -89,8 +117,16 @@ export default class WebAuthClient {
 
   logout(): void {
     this.authGeneration += 1
+    try {
+      sessionStorage.setItem(this.explicitLogoutKey, 'true')
+    } catch {
+      // 存储配额或浏览器策略不能阻断当前页面清除令牌；本实例仍保持显式登出态。
+    }
+    this.silentRenewEnabled = false
+    this.silentRenewClient.cancel()
     this.authorizationCallbackInFlight = null
     this.refreshInFlight = null
+    this.silentRenewInFlight = null
     this.authorizationRequestStore.clear()
     this.tokenStore.clear()
     this.#setAuthenticated(false)
@@ -104,6 +140,17 @@ export default class WebAuthClient {
   }
 
   async getAccessToken(): Promise<string> {
+    if (
+      sessionStorage.getItem(this.explicitLogoutKey) === 'true'
+      && !this.#isAuthorizationCallback()
+    ) {
+      this.silentRenewEnabled = false
+      this.silentRenewClient.cancel()
+      this.silentRenewInFlight = null
+      this.tokenStore.clear()
+      this.#setAuthenticated(false)
+      throw new Error('当前没有可用的登录令牌')
+    }
     const currentTokens = this.tokenStore.get()
     if (currentTokens !== null) {
       if (!this.tokenStore.isExpiringSoon()) {
@@ -153,7 +200,30 @@ export default class WebAuthClient {
       return trackedPromise
     }
 
-    throw new Error('当前没有可用的登录令牌')
+    if (
+      !this.silentRenewEnabled
+      || typeof window === 'undefined'
+      || typeof document === 'undefined'
+    ) {
+      throw new Error('当前没有可用的登录令牌')
+    }
+    if (this.silentRenewInFlight === null) {
+      const renewGeneration = this.authGeneration
+      const renewPromise = this.silentRenewClient.silentRenew().then((tokens) => {
+        if (tokens === null) {
+          this.silentRenewEnabled = false
+          throw new Error('当前没有可用的登录令牌')
+        }
+        return this.#storeTokenSet(tokens, renewGeneration)
+      })
+      const trackedPromise = renewPromise.finally(() => {
+        if (this.silentRenewInFlight === trackedPromise) {
+          this.silentRenewInFlight = null
+        }
+      })
+      this.silentRenewInFlight = trackedPromise
+    }
+    return this.silentRenewInFlight
   }
 
   #isAuthorizationCallback(): boolean {
@@ -166,7 +236,6 @@ export default class WebAuthClient {
 
   async #completeAuthorizationCallback(): Promise<string> {
     const callbackUrl = new URL(location.href)
-    const pendingRequest = this.authorizationRequestStore.take()
     const cleanedCallbackUrl = new URL(callbackUrl)
     const oauthResponseParameters = [
       'code',
@@ -188,11 +257,35 @@ export default class WebAuthClient {
 
     const code = callbackUrl.searchParams.get('code')
     const returnedState = callbackUrl.searchParams.get('state')
-    if (pendingRequest === null || code === null || returnedState === null) {
+    if (returnedState === null) {
+      this.authorizationRequestStore.clear()
+      this.silentAuthorizationRequestStore.clear()
       throw new Error('回调缺少必要参数')
     }
-    if (returnedState !== pendingRequest.state) {
+    let pendingRequest = this.authorizationRequestStore.takeIfState(returnedState)
+    let isSilentCallback = false
+    if (pendingRequest === null) {
+      pendingRequest = this.silentAuthorizationRequestStore.takeIfState(returnedState)
+      isSilentCallback = pendingRequest !== null
+    }
+    if (pendingRequest === null) {
+      const discardedInteractiveRequest = this.authorizationRequestStore.take()
+      const hadSilentRequests = this.silentAuthorizationRequestStore.hasPending()
+      if (discardedInteractiveRequest === null && !hadSilentRequests) {
+        throw new Error('回调缺少必要参数')
+      }
       throw new Error('state 校验失败，拒绝换取令牌')
+    }
+    const authorizationError = callbackUrl.searchParams.get('error')
+    if (authorizationError !== null) {
+      if (isSilentCallback && this.#isEmbedded()) {
+        postSilentRenewError(this.config, returnedState, authorizationError)
+        throw new Error(`静默续签失败：${authorizationError}`)
+      }
+      throw new Error(`授权失败：${authorizationError}`)
+    }
+    if (code === null) {
+      throw new Error('回调缺少必要参数')
     }
     const body = new URLSearchParams({
       grant_type: 'authorization_code',
@@ -202,11 +295,31 @@ export default class WebAuthClient {
       code_verifier: pendingRequest.verifier,
     })
     const callbackGeneration = this.authGeneration
-    const payload = await this.#requestTokens(body)
-    if (payload.refresh_token === undefined || payload.id_token === undefined) {
-      throw new Error('令牌响应格式无效')
+    try {
+      const payload = await this.#requestTokens(body)
+      if (payload.refresh_token === undefined || payload.id_token === undefined) {
+        throw new Error('令牌响应格式无效')
+      }
+      const tokens = this.#createTokenSet(payload, {})
+      const accessToken = this.#storeTokenSet(tokens, callbackGeneration)
+      if (isSilentCallback && this.#isEmbedded()) {
+        postSilentRenewSuccess(this.config, returnedState, tokens)
+      }
+      return accessToken
+    } catch (error) {
+      if (isSilentCallback && this.#isEmbedded()) {
+        postSilentRenewError(
+          this.config,
+          returnedState,
+          sessionStorage.getItem(this.explicitLogoutKey) === 'true'
+            ? 'login_state_invalidated'
+            : error instanceof TokenEndpointError && error.invalidatesCredentials
+              ? 'invalid_grant'
+              : 'token_exchange_failed',
+        )
+      }
+      throw error
     }
-    return this.#storeTokens(payload, {}, callbackGeneration)
   }
 
   async #refreshTokens(
@@ -220,7 +333,10 @@ export default class WebAuthClient {
       refresh_token: refreshToken,
     })
     const payload = await this.#requestTokens(body)
-    return this.#storeTokens(payload, { refreshToken, idToken }, refreshGeneration)
+    return this.#storeTokenSet(
+      this.#createTokenSet(payload, { refreshToken, idToken }),
+      refreshGeneration,
+    )
   }
 
   async #requestTokens(body: URLSearchParams): Promise<TokenEndpointResponse> {
@@ -247,22 +363,32 @@ export default class WebAuthClient {
     return parseTokenEndpointResponse(await response.json())
   }
 
-  #storeTokens(
+  #createTokenSet(
     payload: TokenEndpointResponse,
     previous: { refreshToken?: string, idToken?: string },
-    authGeneration: number,
-  ): string {
-    if (authGeneration !== this.authGeneration) {
-      throw new Error('登录状态已失效')
-    }
-    this.tokenStore.set({
+  ): TokenSet {
+    return {
       accessToken: payload.access_token,
       refreshToken: payload.refresh_token ?? previous.refreshToken,
       idToken: payload.id_token ?? previous.idToken,
       expiresAt: Date.now() + payload.expires_in * 1_000,
-    })
+    }
+  }
+
+  #storeTokenSet(tokens: TokenSet, authGeneration: number): string {
+    if (
+      authGeneration !== this.authGeneration
+      || sessionStorage.getItem(this.explicitLogoutKey) === 'true'
+    ) {
+      throw new Error('登录状态已失效')
+    }
+    this.tokenStore.set(tokens)
     this.#setAuthenticated(true)
-    return payload.access_token
+    return tokens.accessToken
+  }
+
+  #isEmbedded(): boolean {
+    return typeof window !== 'undefined' && window.parent !== window
   }
 
   #setAuthenticated(authenticated: boolean): void {

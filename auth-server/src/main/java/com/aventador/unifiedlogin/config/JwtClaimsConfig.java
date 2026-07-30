@@ -3,6 +3,7 @@ package com.aventador.unifiedlogin.config;
 import com.aventador.unifiedlogin.user.AppUser;
 import com.aventador.unifiedlogin.user.EmailAddress;
 import com.aventador.unifiedlogin.user.UserService;
+import com.aventador.unifiedlogin.user.UserStatus;
 import com.nimbusds.jose.jwk.source.JWKSource;
 import com.nimbusds.jose.proc.SecurityContext;
 import org.springframework.context.annotation.Bean;
@@ -58,6 +59,10 @@ public class JwtClaimsConfig {
             AppUser user = userService.findByEmail(new EmailAddress(context.getPrincipal().getName()))
                     .orElseThrow(() -> new OAuth2AuthenticationException(
                             new OAuth2Error(OAuth2ErrorCodes.INVALID_GRANT, "签发令牌时找不到对应用户", null)));
+            if (user.getStatus() != UserStatus.ACTIVE) {
+                throw new OAuth2AuthenticationException(
+                        new OAuth2Error(OAuth2ErrorCodes.INVALID_GRANT, "签发令牌时账号不可用", null));
+            }
 
             context.getClaims().subject(user.getId().toString());
             context.getClaims().claim("email", user.getEmail());
