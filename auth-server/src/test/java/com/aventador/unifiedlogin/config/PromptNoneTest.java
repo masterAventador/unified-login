@@ -28,6 +28,7 @@ import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.redirectedUrl;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -93,6 +94,27 @@ class PromptNoneTest {
         mockMvc.perform(get(OAuth2TestFlows.authorizeUri(OAuth2TestFlows.validAuthorizeParams())))
                 .andExpect(status().isFound())
                 .andExpect(redirectedUrl("/login"));
+    }
+
+    @Test
+    void authorizationEndpointCanBeFramedForSilentRenewal() throws Exception {
+        mockMvc.perform(get(promptNoneAuthorizeUri()))
+                .andExpect(status().isFound())
+                .andExpect(header().doesNotExist("X-Frame-Options"));
+    }
+
+    @Test
+    void loginPageStillDeniesFraming() throws Exception {
+        mockMvc.perform(get(LoginPaths.LOGIN))
+                .andExpect(status().isOk())
+                .andExpect(header().string("X-Frame-Options", "DENY"));
+    }
+
+    @Test
+    void otherAuthorizationServerEndpointsStillDenyFraming() throws Exception {
+        mockMvc.perform(get("/oauth2/jwks"))
+                .andExpect(status().isOk())
+                .andExpect(header().string("X-Frame-Options", "DENY"));
     }
 
     @Test
