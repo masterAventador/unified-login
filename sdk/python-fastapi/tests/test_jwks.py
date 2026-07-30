@@ -63,6 +63,19 @@ async def test_first_lookup_fetches_issuer_jwks_and_cache_hit_does_not_refetch()
 
 
 @pytest.mark.asyncio
+async def test_warm_up_fetches_jwks_before_any_key_lookup() -> None:
+    signing_jwk, expected_key = rsa_jwk("current-key")
+    client = FakeHttpClient([jwks_response(signing_jwk)])
+    cache = JwksCache("https://auth.example", client)
+
+    await cache.warm_up()
+
+    cached_key = await cache.get_key("current-key")
+    assert cached_key.public_numbers() == expected_key.public_numbers()
+    assert client.requested_urls == ["https://auth.example/oauth2/jwks"]
+
+
+@pytest.mark.asyncio
 async def test_unknown_kid_refetches_once_and_accepts_rotated_key() -> None:
     old_jwk, _ = rsa_jwk("old-key")
     rotated_jwk, expected_key = rsa_jwk("rotated-key")

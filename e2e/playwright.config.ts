@@ -1,9 +1,16 @@
 import { defineConfig } from '@playwright/test'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const authServerDirectory = fileURLToPath(new URL('../auth-server/', import.meta.url))
 const demoADirectory = fileURLToPath(new URL('../demo/demo-web-a/', import.meta.url))
 const demoBDirectory = fileURLToPath(new URL('../demo/demo-web-b/', import.meta.url))
+const demoApiDirectory = fileURLToPath(new URL('../demo/demo-api/', import.meta.url))
+const demoApiFrontendDirectory = fileURLToPath(
+  new URL('../demo/demo-api/frontend/', import.meta.url),
+)
+const e2eDirectory = fileURLToPath(new URL('./', import.meta.url))
 const mavenWrapper = process.platform === 'win32' ? 'mvnw.cmd' : './mvnw'
 
 export default defineConfig({
@@ -39,6 +46,39 @@ export default defineConfig({
       command: 'pnpm build && pnpm preview',
       cwd: demoBDirectory,
       url: 'http://127.0.0.1:5174',
+      timeout: 60_000,
+      reuseExistingServer: false,
+      gracefulShutdown: { signal: 'SIGTERM', timeout: 5_000 },
+    },
+    {
+      name: '资源验收认证中心',
+      command: 'node scripts/resource-auth-server.mjs',
+      cwd: e2eDirectory,
+      url: 'http://127.0.0.1:19001/health',
+      timeout: 60_000,
+      reuseExistingServer: false,
+      gracefulShutdown: { signal: 'SIGTERM', timeout: 10_000 },
+    },
+    {
+      name: 'Demo API',
+      command: 'uv run --locked uvicorn demo_api.app:app --host 127.0.0.1 --port 8000',
+      cwd: demoApiDirectory,
+      env: {
+        ALLOWED_ORIGINS: 'http://127.0.0.1:5274',
+        ISSUER_URL: 'http://127.0.0.1:9001',
+        RESOURCE_AUDIENCE: 'demo-api',
+        UV_CACHE_DIR: join(tmpdir(), 'unified-login-uv-cache'),
+      },
+      url: 'http://127.0.0.1:8000/public',
+      timeout: 60_000,
+      reuseExistingServer: false,
+      gracefulShutdown: { signal: 'SIGTERM', timeout: 5_000 },
+    },
+    {
+      name: 'Demo API 浏览器客户端',
+      command: 'pnpm build && pnpm preview',
+      cwd: demoApiFrontendDirectory,
+      url: 'http://127.0.0.1:5274',
       timeout: 60_000,
       reuseExistingServer: false,
       gracefulShutdown: { signal: 'SIGTERM', timeout: 5_000 },

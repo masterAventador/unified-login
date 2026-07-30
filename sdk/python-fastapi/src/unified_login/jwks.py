@@ -43,6 +43,15 @@ class JwksCache:
         self._last_unknown_refresh_at: float | None = None
         self._refresh_lock = asyncio.Lock()
 
+    async def warm_up(self) -> None:
+        if self._loaded:
+            return
+
+        async with self._refresh_lock:
+            if self._loaded:
+                return
+            await self._ensure_loaded()
+
     async def get_key(self, kid: str) -> rsa.RSAPublicKey:
         cached = self._keys.get(kid)
         if cached is not None:
@@ -55,14 +64,7 @@ class JwksCache:
 
             now = self._clock()
             if not self._loaded:
-                if self._cooldown_active(self._initial_failure_at, now):
-                    raise JwksError("JWKS 首次拉取失败后仍处于重试冷却期")
-                try:
-                    await self._refresh()
-                except JwksError:
-                    self._initial_failure_at = now
-                    raise
-                self._initial_failure_at = None
+                await self._ensure_loaded(now)
             else:
                 if self._cooldown_active(self._last_unknown_refresh_at, now):
                     raise JwksError(f"未知 kid {kid!r}，JWKS 刷新仍处于冷却期")
@@ -73,6 +75,17 @@ class JwksCache:
             if key is None:
                 raise JwksError(f"JWKS 中不存在 kid {kid!r}")
             return key
+
+    async def _ensure_loaded(self, now: float | None = None) -> None:
+        attempt_at = self._clock() if now is None else now
+        if self._cooldown_active(self._initial_failure_at, attempt_at):
+            raise JwksError("JWKS 首次拉取失败后仍处于重试冷却期")
+        try:
+            await self._refresh()
+        except JwksError:
+            self._initial_failure_at = attempt_at
+            raise
+        self._initial_failure_at = None
 
     def _cooldown_active(self, last_attempt: float | None, now: float) -> bool:
         return last_attempt is not None and (
