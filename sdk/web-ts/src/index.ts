@@ -397,7 +397,14 @@ export default class WebAuthClient {
     }
     this.authenticated = authenticated
     this.authStateListeners.forEach((listener) => {
-      listener(authenticated)
+      const reportError = (error: unknown) => {
+        console.error('认证状态订阅者执行失败', error)
+      }
+      try {
+        void Promise.resolve(listener(authenticated)).catch(reportError)
+      } catch (error) {
+        reportError(error)
+      }
     })
   }
 

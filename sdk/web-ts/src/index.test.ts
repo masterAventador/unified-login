@@ -33,6 +33,7 @@ type _PublicApiIsExactlyFourMethods = Assert<Equal<
 >>
 
 afterEach(() => {
+  vi.restoreAllMocks()
   vi.unstubAllGlobals()
   vi.useRealTimers()
 })
@@ -586,6 +587,81 @@ describe('WebAuthClient 登录态订阅与登出', () => {
     expect(activeListener).toHaveBeenNthCalledWith(2, false)
     await expect(client.getAccessToken()).rejects.toThrow('当前没有可用的登录令牌')
     expect(fetchMock).toHaveBeenCalledOnce()
+  })
+
+  it('订阅者抛错时不改变认证结果，并继续通知其他订阅者', async () => {
+    const storage = new MemoryStorage()
+    storage.setItem('demo-web-b.state', 'expected-state')
+    storage.setItem('demo-web-b.code_verifier', 'code-verifier')
+    const listenerError = new Error('订阅者故障')
+    const failingListener = vi.fn(() => {
+      throw listenerError
+    })
+    const healthyListener = vi.fn()
+    const errorReporter = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    vi.stubGlobal('sessionStorage', storage)
+    stubLocation('http://localhost:5174/callback?code=one-time-code&state=expected-state')
+    vi.stubGlobal('history', { state: null, replaceState: vi.fn() })
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      access_token: 'access-token',
+      refresh_token: 'refresh-token',
+      id_token: 'id-token',
+      expires_in: 900,
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })))
+    const client = new WebAuthClient(CONFIG)
+    client.onAuthStateChange(failingListener)
+    client.onAuthStateChange(healthyListener)
+
+    await expect(client.getAccessToken()).resolves.toBe('access-token')
+    stubLocation('http://localhost:5174/')
+    expect(() => client.logout()).not.toThrow()
+
+    expect(failingListener.mock.calls).toEqual([[true], [false]])
+    expect(healthyListener.mock.calls).toEqual([[true], [false]])
+    expect(errorReporter.mock.calls).toEqual([
+      ['认证状态订阅者执行失败', listenerError],
+      ['认证状态订阅者执行失败', listenerError],
+    ])
+  })
+
+  it('异步订阅者拒绝时不产生未处理异常，并继续通知其他订阅者', async () => {
+    const storage = new MemoryStorage()
+    storage.setItem('demo-web-b.state', 'expected-state')
+    storage.setItem('demo-web-b.code_verifier', 'code-verifier')
+    const listenerError = new Error('异步订阅者故障')
+    const failingListener = vi.fn(async () => {
+      throw listenerError
+    })
+    const healthyListener = vi.fn()
+    const errorReporter = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    vi.stubGlobal('sessionStorage', storage)
+    stubLocation('http://localhost:5174/callback?code=one-time-code&state=expected-state')
+    vi.stubGlobal('history', { state: null, replaceState: vi.fn() })
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      access_token: 'access-token',
+      refresh_token: 'refresh-token',
+      id_token: 'id-token',
+      expires_in: 900,
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })))
+    const client = new WebAuthClient(CONFIG)
+    client.onAuthStateChange(failingListener)
+    client.onAuthStateChange(healthyListener)
+
+    await expect(client.getAccessToken()).resolves.toBe('access-token')
+
+    expect(healthyListener).toHaveBeenCalledExactlyOnceWith(true)
+    await vi.waitFor(() => {
+      expect(errorReporter).toHaveBeenCalledExactlyOnceWith(
+        '认证状态订阅者执行失败',
+        listenerError,
+      )
+    })
   })
 
   it('登出标记写入失败时仍清除内存令牌并通知退出登录', async () => {
