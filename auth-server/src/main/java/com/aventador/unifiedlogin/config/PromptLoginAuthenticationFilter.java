@@ -5,11 +5,15 @@ import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import jakarta.servlet.http.HttpSession;
+import org.springframework.security.authentication.AnonymousAuthenticationToken;
+import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.web.context.HttpSessionSecurityContextRepository;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 import java.io.IOException;
+import java.util.Arrays;
+
 /**
  * Enforces OIDC {@code prompt=login} for authorization-code requests.
  *
@@ -42,7 +46,9 @@ final class PromptLoginAuthenticationFilter extends OncePerRequestFilter {
         HttpSession session = request.getSession();
         String requestFingerprint = requestFingerprint(request);
         if (requestFingerprint.equals(session.getAttribute(REAUTHENTICATION_REQUEST))) {
-            session.removeAttribute(REAUTHENTICATION_REQUEST);
+            if (isAuthenticated()) {
+                session.removeAttribute(REAUTHENTICATION_REQUEST);
+            }
             filterChain.doFilter(request, response);
             return;
         }
@@ -55,9 +61,18 @@ final class PromptLoginAuthenticationFilter extends OncePerRequestFilter {
 
     private boolean requiresReauthentication(HttpServletRequest request) {
         String requestPath = request.getRequestURI().substring(request.getContextPath().length());
+        String prompt = request.getParameter("prompt");
         return "GET".equals(request.getMethod())
                 && authorizationEndpoint.equals(requestPath)
-                && "login".equals(request.getParameter("prompt"));
+                && prompt != null
+                && Arrays.asList(prompt.split(" ", -1)).contains("login");
+    }
+
+    private boolean isAuthenticated() {
+        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+        return authentication != null
+                && authentication.isAuthenticated()
+                && !(authentication instanceof AnonymousAuthenticationToken);
     }
 
     private String requestFingerprint(HttpServletRequest request) {
