@@ -24,6 +24,7 @@ import org.springframework.security.web.authentication.LoginUrlAuthenticationEnt
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 
+import java.net.URI;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -87,6 +88,67 @@ class PromptNoneTest {
                 .containsEntry("error", "login_required")
                 .containsEntry("state", STATE)
                 .doesNotContainKey("code");
+    }
+
+    @Test
+    void anonymousPromptNoneRequestStillValidatesPkceBeforeReturningLoginRequired() throws Exception {
+        Map<String, String> params = promptNoneAuthorizeParams();
+        params.remove("code_challenge");
+        params.remove("code_challenge_method");
+
+        MvcResult result = mockMvc.perform(get(OAuth2TestFlows.authorizeUri(params)))
+                .andExpect(status().isFound())
+                .andReturn();
+
+        String location = result.getResponse().getRedirectedUrl();
+        assertThat(location).startsWith(OAuth2TestFlows.REDIRECT_URI);
+        assertThat(OAuth2TestFlows.queryParams(location))
+                .containsEntry("error", "invalid_request")
+                .containsEntry("state", STATE)
+                .doesNotContainKeys("code", "login_required");
+    }
+
+    @Test
+    void anonymousPromptNoneRequestStillValidatesScopeBeforeReturningLoginRequired() throws Exception {
+        Map<String, String> params = promptNoneAuthorizeParams();
+        params.put("scope", "openid forbidden");
+
+        MvcResult result = mockMvc.perform(get(URI.create(OAuth2TestFlows.authorizeUri(params))))
+                .andExpect(status().isFound())
+                .andReturn();
+
+        assertThat(OAuth2TestFlows.queryParams(result.getResponse().getRedirectedUrl()))
+                .containsEntry("error", "invalid_scope")
+                .containsEntry("state", STATE)
+                .doesNotContainKeys("code", "login_required");
+    }
+
+    @Test
+    void anonymousPromptNoneRequestRejectsIllegalPromptCombination() throws Exception {
+        Map<String, String> params = promptNoneAuthorizeParams();
+        params.put("prompt", "none login");
+
+        MvcResult result = mockMvc.perform(get(URI.create(OAuth2TestFlows.authorizeUri(params))))
+                .andExpect(status().isFound())
+                .andReturn();
+
+        assertThat(OAuth2TestFlows.queryParams(result.getResponse().getRedirectedUrl()))
+                .containsEntry("error", "invalid_request")
+                .containsEntry("state", STATE)
+                .doesNotContainKeys("code", "login_required");
+    }
+
+    @Test
+    void anonymousPromptNoneRequestRejectsUnsupportedResponseTypeBeforeLoginHandling() throws Exception {
+        Map<String, String> params = promptNoneAuthorizeParams();
+        params.put("response_type", "token");
+
+        MvcResult result = mockMvc.perform(get(OAuth2TestFlows.authorizeUri(params)))
+                .andExpect(status().isBadRequest())
+                .andReturn();
+
+        assertThat(result.getResponse().getRedirectedUrl()).isNull();
+        assertThat(result.getResponse().getErrorMessage()).contains("unsupported_response_type");
     }
 
     @Test

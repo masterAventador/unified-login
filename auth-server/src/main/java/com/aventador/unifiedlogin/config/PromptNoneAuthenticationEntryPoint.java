@@ -47,6 +47,9 @@ final class PromptNoneAuthenticationEntryPoint implements AuthenticationEntryPoi
             return;
         }
 
+        // Spring Security 7.1 会先经 OAuth2AuthorizationCodeRequestValidatingFilter 校验
+        // response_type、PKCE、scope 与 prompt 组合，再进入 AuthorizationFilter 并调用本入口点。
+        // 此处仍独立复验 redirect_uri，避免未来过滤器顺序变化时把错误重定向到攻击者地址。
         String redirectUri = registeredRedirectUri(request);
         if (redirectUri == null) {
             response.sendError(HttpServletResponse.SC_BAD_REQUEST);
