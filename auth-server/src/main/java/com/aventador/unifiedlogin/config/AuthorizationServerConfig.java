@@ -1,5 +1,6 @@
 package com.aventador.unifiedlogin.config;
 
+import com.aventador.unifiedlogin.account.UserTokenLock;
 import com.aventador.unifiedlogin.security.LoginPaths;
 import com.nimbusds.jose.JOSEObjectType;
 import com.nimbusds.jose.jwk.JWKSet;
@@ -39,6 +40,7 @@ import org.springframework.security.web.util.matcher.MediaTypeRequestMatcher;
 import org.springframework.security.web.util.matcher.NegatedRequestMatcher;
 import org.springframework.security.web.util.matcher.RequestMatcher;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.transaction.PlatformTransactionManager;
 
 import java.nio.file.Path;
 import java.util.List;
@@ -53,7 +55,9 @@ public class AuthorizationServerConfig {
             RegisteredClientRepository registeredClientRepository,
             AuthorizationServerSettings authorizationServerSettings,
             OAuth2AuthorizationService authorizationService,
-            UserDetailsService userDetailsService) throws Exception {
+            UserDetailsService userDetailsService,
+            UserTokenLock userTokenLock,
+            PlatformTransactionManager transactionManager) throws Exception {
         // Spring Security 7 中该类没有 authorizationServer() 静态工厂（那是旧 1.x 的 API），
         // 用无参构造——照旧文档写静态工厂会编译失败
         OAuth2AuthorizationServerConfigurer authorizationServerConfigurer =
@@ -77,7 +81,8 @@ public class AuthorizationServerConfig {
                         .tokenEndpoint((tokenEndpoint) -> tokenEndpoint
                                 .authenticationProviders((authenticationProviders) ->
                                         AccountStatusRefreshTokenAuthenticationProvider.guardRefreshTokenProvider(
-                                                authenticationProviders, authorizationService, userDetailsService)))
+                                                authenticationProviders, authorizationService, userDetailsService,
+                                                userTokenLock, transactionManager)))
                         .authorizationServerMetadataEndpoint((metadataEndpoint) -> metadataEndpoint
                                 .authorizationServerMetadataCustomizer(
                                         AuthorizationServerConfig::customizeAdvertisedCapabilities))

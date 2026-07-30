@@ -1,5 +1,6 @@
 package com.aventador.unifiedlogin.config;
 
+import com.aventador.unifiedlogin.account.UserTokenLock;
 import org.springframework.security.authentication.AuthenticationProvider;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.AuthenticationException;
@@ -13,6 +14,8 @@ import org.springframework.security.oauth2.server.authorization.OAuth2Authorizat
 import org.springframework.security.oauth2.server.authorization.OAuth2TokenType;
 import org.springframework.security.oauth2.server.authorization.authentication.OAuth2RefreshTokenAuthenticationProvider;
 import org.springframework.security.oauth2.server.authorization.authentication.OAuth2RefreshTokenAuthenticationToken;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.util.List;
 
@@ -40,11 +43,18 @@ final class AccountStatusRefreshTokenAuthenticationProvider implements Authentic
 
     private final UserDetailsService userDetailsService;
 
+    private final UserTokenLock userTokenLock;
+
+    private final TransactionTemplate transactionTemplate;
+
     private AccountStatusRefreshTokenAuthenticationProvider(AuthenticationProvider delegate,
-            OAuth2AuthorizationService authorizationService, UserDetailsService userDetailsService) {
+            OAuth2AuthorizationService authorizationService, UserDetailsService userDetailsService,
+            UserTokenLock userTokenLock, PlatformTransactionManager transactionManager) {
         this.delegate = delegate;
         this.authorizationService = authorizationService;
         this.userDetailsService = userDetailsService;
+        this.userTokenLock = userTokenLock;
+        this.transactionTemplate = new TransactionTemplate(transactionManager);
     }
 
     /**
@@ -55,12 +65,14 @@ final class AccountStatusRefreshTokenAuthenticationProvider implements Authentic
      * 「保护写了但没人守着」的跟头，这里必须响。
      */
     static void guardRefreshTokenProvider(List<AuthenticationProvider> providers,
-            OAuth2AuthorizationService authorizationService, UserDetailsService userDetailsService) {
+            OAuth2AuthorizationService authorizationService, UserDetailsService userDetailsService,
+            UserTokenLock userTokenLock, PlatformTransactionManager transactionManager) {
         int guarded = 0;
         for (int i = 0; i < providers.size(); i++) {
             if (providers.get(i) instanceof OAuth2RefreshTokenAuthenticationProvider) {
                 providers.set(i, new AccountStatusRefreshTokenAuthenticationProvider(
-                        providers.get(i), authorizationService, userDetailsService));
+                        providers.get(i), authorizationService, userDetailsService,
+                        userTokenLock, transactionManager));
                 guarded++;
             }
         }
@@ -73,6 +85,11 @@ final class AccountStatusRefreshTokenAuthenticationProvider implements Authentic
 
     @Override
     public Authentication authenticate(Authentication authentication) throws AuthenticationException {
+        return this.transactionTemplate.execute(
+                (transactionStatus) -> authenticateWithinTransaction(authentication));
+    }
+
+    private Authentication authenticateWithinTransaction(Authentication authentication) {
         OAuth2RefreshTokenAuthenticationToken refreshTokenAuthentication =
                 (OAuth2RefreshTokenAuthenticationToken) authentication;
 
@@ -81,6 +98,11 @@ final class AccountStatusRefreshTokenAuthenticationProvider implements Authentic
         // 令牌本身查不到授权记录时这里无从判断账号，也不需要判断：交给被包裹的 provider
         // 按 invalid_grant 拒绝，保持「令牌无效」与「账号不可用」的响应形态一致
         if (authorization != null) {
+            // 必须在回查状态和框架保存轮转结果之前取得用户行锁，并由包住整个 delegate
+            // 的事务持有到 save 完成。否则并发撤销可能先 DELETE，随后被 save 重新 INSERT。
+            if (!this.userTokenLock.lockByPrincipalName(authorization.getPrincipalName())) {
+                throw new OAuth2AuthenticationException(OAuth2ErrorCodes.INVALID_GRANT);
+            }
             requireUsableAccount(authorization.getPrincipalName());
         }
         return this.delegate.authenticate(authentication);
