@@ -10,7 +10,8 @@ import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 
-
+import static org.hamcrest.Matchers.contains;
+import static org.hamcrest.Matchers.hasItem;
 import static org.hamcrest.Matchers.startsWith;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
@@ -41,7 +42,29 @@ class OidcEndpointsTest {
         mockMvc.perform(get("/.well-known/openid-configuration"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.grant_types_supported").value(
-                        org.hamcrest.Matchers.hasItems("authorization_code", "refresh_token")));
+                        contains("authorization_code", "refresh_token")));
+    }
+
+    @Test
+    void discoveryAdvertisesPublicClientAuthentication() throws Exception {
+        mockMvc.perform(get("/.well-known/openid-configuration"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.token_endpoint_auth_methods_supported").value(hasItem("none")));
+    }
+
+    @Test
+    void oauthAuthorizationServerMetadataAdvertisesOnlySupportedGrants() throws Exception {
+        mockMvc.perform(get("/.well-known/oauth-authorization-server"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.grant_types_supported").value(
+                        contains("authorization_code", "refresh_token")));
+    }
+
+    @Test
+    void oauthAuthorizationServerMetadataAdvertisesPublicClientAuthentication() throws Exception {
+        mockMvc.perform(get("/.well-known/oauth-authorization-server"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.token_endpoint_auth_methods_supported").value(hasItem("none")));
     }
 
     @Test

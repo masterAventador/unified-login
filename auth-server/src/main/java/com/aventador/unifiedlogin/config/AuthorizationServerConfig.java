@@ -15,10 +15,14 @@ import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.OAuth2AuthorizationServerConfiguration;
 import org.springframework.security.config.annotation.web.configurers.oauth2.server.authorization.OAuth2AuthorizationServerConfigurer;
 import org.springframework.security.core.userdetails.UserDetailsService;
+import org.springframework.security.oauth2.core.AuthorizationGrantType;
+import org.springframework.security.oauth2.core.ClientAuthenticationMethod;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
+import org.springframework.security.oauth2.server.authorization.OAuth2AuthorizationServerMetadata;
 import org.springframework.security.oauth2.server.authorization.OAuth2AuthorizationService;
 import org.springframework.security.oauth2.server.authorization.JdbcOAuth2AuthorizationService;
 import org.springframework.security.oauth2.server.authorization.client.RegisteredClientRepository;
+import org.springframework.security.oauth2.server.authorization.oidc.OidcProviderConfiguration;
 import org.springframework.security.oauth2.server.authorization.settings.AuthorizationServerSettings;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.LoginUrlAuthenticationEntryPoint;
@@ -31,6 +35,7 @@ import org.springframework.security.web.util.matcher.RequestMatcher;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.nio.file.Path;
+import java.util.List;
 import java.util.Objects;
 
 @Configuration
@@ -67,7 +72,13 @@ public class AuthorizationServerConfig {
                                 .authenticationProviders((authenticationProviders) ->
                                         AccountStatusRefreshTokenAuthenticationProvider.guardRefreshTokenProvider(
                                                 authenticationProviders, authorizationService, userDetailsService)))
-                        .oidc(Customizer.withDefaults()))
+                        .authorizationServerMetadataEndpoint((metadataEndpoint) -> metadataEndpoint
+                                .authorizationServerMetadataCustomizer(
+                                        AuthorizationServerConfig::customizeAdvertisedCapabilities))
+                        .oidc((oidc) -> oidc
+                                .providerConfigurationEndpoint((providerConfiguration) ->
+                                        providerConfiguration.providerConfigurationCustomizer(
+                                                AuthorizationServerConfig::customizeAdvertisedCapabilities))))
                 .authorizeHttpRequests((authorize) -> authorize
                         .anyRequest().authenticated())
                 .exceptionHandling((exceptions) -> exceptions
@@ -88,6 +99,28 @@ public class AuthorizationServerConfig {
                 .oauth2ResourceServer((resourceServer) -> resourceServer.jwt(Customizer.withDefaults()));
 
         return http.build();
+    }
+
+    private static void customizeAdvertisedCapabilities(OAuth2AuthorizationServerMetadata.Builder metadata) {
+        metadata.grantTypes(AuthorizationServerConfig::replaceAdvertisedGrantTypes);
+        metadata.tokenEndpointAuthenticationMethods(
+                AuthorizationServerConfig::includePublicClientAuthentication);
+    }
+
+    private static void customizeAdvertisedCapabilities(OidcProviderConfiguration.Builder metadata) {
+        metadata.grantTypes(AuthorizationServerConfig::replaceAdvertisedGrantTypes);
+        metadata.tokenEndpointAuthenticationMethods(
+                AuthorizationServerConfig::includePublicClientAuthentication);
+    }
+
+    private static void replaceAdvertisedGrantTypes(List<String> grantTypes) {
+        grantTypes.clear();
+        grantTypes.add(AuthorizationGrantType.AUTHORIZATION_CODE.getValue());
+        grantTypes.add(AuthorizationGrantType.REFRESH_TOKEN.getValue());
+    }
+
+    private static void includePublicClientAuthentication(List<String> authenticationMethods) {
+        authenticationMethods.add(ClientAuthenticationMethod.NONE.getValue());
     }
 
     @Bean
