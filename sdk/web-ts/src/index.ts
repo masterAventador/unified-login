@@ -11,6 +11,35 @@ import {
 import { TokenStore } from './tokens'
 import type { TokenSet } from './tokens'
 
+const INVALIDATED_AUTH_MARKER = 'invalidated'
+const DECIMAL_AUTH_GENERATION_PATTERN = /^(0|[1-9]\d*)$/
+const RECOVERED_AUTH_GENERATION_PATTERN =
+  /^recovered:([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}):(0|[1-9]\d*)$/
+
+interface ParsedAuthGeneration {
+  readonly prefix: string
+  readonly counter: number
+}
+
+function parseAuthGeneration(stored: string): ParsedAuthGeneration | null {
+  let prefix = ''
+  let counterText = stored
+  if (!DECIMAL_AUTH_GENERATION_PATTERN.test(stored)) {
+    const recoveredGeneration = RECOVERED_AUTH_GENERATION_PATTERN.exec(stored)
+    if (recoveredGeneration === null) {
+      return null
+    }
+    prefix = `recovered:${recoveredGeneration[1]}:`
+    counterText = recoveredGeneration[2]!
+  }
+  const counter = Number(counterText)
+  return Number.isSafeInteger(counter) ? { prefix, counter } : null
+}
+
+function interactiveLoginMarker(sharedAuthGeneration: string): string {
+  return `login:${sharedAuthGeneration}`
+}
+
 interface TokenEndpointResponse {
   readonly access_token: string
   readonly refresh_token?: string
@@ -63,10 +92,12 @@ export default class WebAuthClient {
   private readonly silentAuthorizationRequestStore: StateIndexedAuthorizationRequestStore
   private readonly silentRenewClient: SilentRenewClient
   private readonly explicitLogoutKey: string
+  private readonly sharedAuthGenerationKey: string
   private readonly tokenStore = new TokenStore()
   private readonly authStateListeners = new Set<AuthStateChangeListener>()
   private authenticated = false
   private authGeneration = 0
+  private sharedAuthGeneration: string
   private authorizationCallbackInFlight: Promise<string> | null = null
   private refreshInFlight: Promise<string> | null = null
   private silentRenewEnabled = true
@@ -74,6 +105,8 @@ export default class WebAuthClient {
 
   constructor(private readonly config: WebAuthClientConfig) {
     this.explicitLogoutKey = `${config.clientId}.explicit_logout`
+    this.sharedAuthGenerationKey = `${config.clientId}.auth_generation`
+    this.sharedAuthGeneration = this.#readSharedAuthGeneration()
     this.authorizationRequestStore = new AuthorizationRequestStore(
       config.clientId,
       sessionStorage,
@@ -86,15 +119,28 @@ export default class WebAuthClient {
       config,
       this.silentAuthorizationRequestStore,
     )
-    this.silentRenewEnabled = sessionStorage.getItem(this.explicitLogoutKey) !== 'true'
+    this.silentRenewEnabled = sessionStorage.getItem(this.explicitLogoutKey) === null
   }
 
   async login(): Promise<void> {
-    sessionStorage.removeItem(this.explicitLogoutKey)
-    this.silentRenewEnabled = true
-    this.silentRenewClient.cancel()
-    this.silentRenewInFlight = null
+    sessionStorage.setItem(this.explicitLogoutKey, INVALIDATED_AUTH_MARKER)
+    let loginSharedAuthGeneration: string
+    try {
+      loginSharedAuthGeneration = this.#advanceSharedAuthGeneration()
+      sessionStorage.setItem(
+        this.explicitLogoutKey,
+        interactiveLoginMarker(loginSharedAuthGeneration),
+      )
+    } catch (error) {
+      this.silentRenewEnabled = false
+      this.#invalidateCurrentAuthenticationForLogin()
+      throw error
+    }
+    this.#invalidateCurrentAuthenticationForLogin()
     const pkce = await createPkcePair()
+    if (this.#readSharedAuthGeneration() !== loginSharedAuthGeneration) {
+      throw new Error('登录状态已失效')
+    }
     const state = crypto.randomUUID()
     this.authorizationRequestStore.save({ state, verifier: pkce.verifier })
 
@@ -118,9 +164,14 @@ export default class WebAuthClient {
   logout(): void {
     this.authGeneration += 1
     try {
-      sessionStorage.setItem(this.explicitLogoutKey, 'true')
+      this.#advanceSharedAuthGeneration()
     } catch {
-      // 存储配额或浏览器策略不能阻断当前页面清除令牌；本实例仍保持显式登出态。
+      // 存储不可用时仍继续清除当前实例的令牌。
+    }
+    try {
+      sessionStorage.setItem(this.explicitLogoutKey, INVALIDATED_AUTH_MARKER)
+    } catch {
+      // 标记写入失败不能阻断当前页面清除令牌；共享代次仍可使其他实例失效。
     }
     this.silentRenewEnabled = false
     this.silentRenewClient.cancel()
@@ -140,9 +191,27 @@ export default class WebAuthClient {
   }
 
   async getAccessToken(): Promise<string> {
+    const authorizationCallback = this.#isAuthorizationCallback()
+    const sharedAuthGenerationCurrent = this.#hasCurrentSharedAuthGeneration()
     if (
-      sessionStorage.getItem(this.explicitLogoutKey) === 'true'
-      && !this.#isAuthorizationCallback()
+      !sharedAuthGenerationCurrent
+    ) {
+      this.silentRenewEnabled = false
+      this.silentRenewClient.cancel()
+      this.silentRenewInFlight = null
+      this.tokenStore.clear()
+      this.#setAuthenticated(false)
+      if (authorizationCallback) {
+        throw new Error('登录状态已失效')
+      }
+      throw new Error('当前没有可用的登录令牌')
+    }
+    if (this.authorizationCallbackInFlight !== null) {
+      return this.authorizationCallbackInFlight
+    }
+    if (
+      sessionStorage.getItem(this.explicitLogoutKey) !== null
+      && !authorizationCallback
     ) {
       this.silentRenewEnabled = false
       this.silentRenewClient.cancel()
@@ -164,11 +233,24 @@ export default class WebAuthClient {
             currentTokens.idToken,
             refreshGeneration,
           ).catch((error: unknown) => {
-            if (
+            const refreshStateInvalidated =
+              this.authGeneration !== refreshGeneration
+              || !this.#hasCurrentSharedAuthGeneration()
+            const credentialsInvalidated =
               error instanceof TokenEndpointError
               && error.invalidatesCredentials
-              && this.authGeneration === refreshGeneration
-            ) {
+            if (credentialsInvalidated && !refreshStateInvalidated) {
+              try {
+                sessionStorage.setItem(
+                  this.explicitLogoutKey,
+                  INVALIDATED_AUTH_MARKER,
+                )
+              } catch {
+                // 存储不可用时仍要让当前实例停止使用已失效的凭据。
+              }
+            }
+            if (refreshStateInvalidated || credentialsInvalidated) {
+              this.silentRenewEnabled = false
               this.tokenStore.clear()
               this.#setAuthenticated(false)
             }
@@ -183,10 +265,6 @@ export default class WebAuthClient {
         }
         return this.refreshInFlight
       }
-    }
-
-    if (this.authorizationCallbackInFlight !== null) {
-      return this.authorizationCallbackInFlight
     }
 
     if (this.#isAuthorizationCallback()) {
@@ -295,12 +373,23 @@ export default class WebAuthClient {
       code_verifier: pendingRequest.verifier,
     })
     const callbackGeneration = this.authGeneration
+    const callbackSharedAuthGeneration = this.sharedAuthGeneration
     try {
       const payload = await this.#requestTokens(body)
       if (payload.refresh_token === undefined || payload.id_token === undefined) {
         throw new Error('令牌响应格式无效')
       }
       const tokens = this.#createTokenSet(payload, {})
+      if (
+        !isSilentCallback
+        && callbackGeneration === this.authGeneration
+        && this.#hasCurrentSharedAuthGeneration()
+        && sessionStorage.getItem(this.explicitLogoutKey)
+          === interactiveLoginMarker(callbackSharedAuthGeneration)
+      ) {
+        sessionStorage.removeItem(this.explicitLogoutKey)
+        this.silentRenewEnabled = true
+      }
       const accessToken = this.#storeTokenSet(tokens, callbackGeneration)
       if (isSilentCallback && this.#isEmbedded()) {
         postSilentRenewSuccess(this.config, returnedState, tokens)
@@ -311,7 +400,10 @@ export default class WebAuthClient {
         postSilentRenewError(
           this.config,
           returnedState,
-          sessionStorage.getItem(this.explicitLogoutKey) === 'true'
+          (
+            sessionStorage.getItem(this.explicitLogoutKey) !== null
+            || !this.#hasCurrentSharedAuthGeneration()
+          )
             ? 'login_state_invalidated'
             : error instanceof TokenEndpointError && error.invalidatesCredentials
               ? 'invalid_grant'
@@ -376,15 +468,73 @@ export default class WebAuthClient {
   }
 
   #storeTokenSet(tokens: TokenSet, authGeneration: number): string {
-    if (
-      authGeneration !== this.authGeneration
-      || sessionStorage.getItem(this.explicitLogoutKey) === 'true'
-    ) {
-      throw new Error('登录状态已失效')
+    if (!this.#isTokenStateCurrent(authGeneration)) {
+      return this.#rejectInvalidatedTokenState()
     }
     this.tokenStore.set(tokens)
     this.#setAuthenticated(true)
+    if (!this.#isTokenStateCurrent(authGeneration)) {
+      return this.#rejectInvalidatedTokenState()
+    }
     return tokens.accessToken
+  }
+
+  #isTokenStateCurrent(authGeneration: number): boolean {
+    return authGeneration === this.authGeneration
+      && sessionStorage.getItem(this.explicitLogoutKey) === null
+      && this.#hasCurrentSharedAuthGeneration()
+  }
+
+  #invalidateCurrentAuthenticationForLogin(): void {
+    this.authorizationRequestStore.clear()
+    this.authGeneration += 1
+    this.tokenStore.clear()
+    this.silentRenewClient.cancel()
+    this.silentRenewInFlight = null
+    this.#setAuthenticated(false)
+  }
+
+  #rejectInvalidatedTokenState(): never {
+    this.silentRenewEnabled = false
+    this.silentRenewClient.cancel()
+    this.silentRenewInFlight = null
+    this.tokenStore.clear()
+    this.#setAuthenticated(false)
+    throw new Error('登录状态已失效')
+  }
+
+  #readSharedAuthGeneration(): string {
+    const stored = sessionStorage.getItem(this.sharedAuthGenerationKey)
+    if (stored === null) {
+      return '0'
+    }
+    if (parseAuthGeneration(stored) === null) {
+      sessionStorage.setItem(this.explicitLogoutKey, INVALIDATED_AUTH_MARKER)
+      const recoveredGeneration = `recovered:${crypto.randomUUID()}:0`
+      sessionStorage.setItem(
+        this.sharedAuthGenerationKey,
+        recoveredGeneration,
+      )
+      return recoveredGeneration
+    }
+    return stored
+  }
+
+  #advanceSharedAuthGeneration(): string {
+    const current = this.#readSharedAuthGeneration()
+    const parsedGeneration = parseAuthGeneration(current)!
+    if (parsedGeneration.counter === Number.MAX_SAFE_INTEGER) {
+      throw new Error('登录状态已失效')
+    }
+    const next =
+      `${parsedGeneration.prefix}${parsedGeneration.counter + 1}`
+    sessionStorage.setItem(this.sharedAuthGenerationKey, next)
+    this.sharedAuthGeneration = next
+    return next
+  }
+
+  #hasCurrentSharedAuthGeneration(): boolean {
+    return this.#readSharedAuthGeneration() === this.sharedAuthGeneration
   }
 
   #isEmbedded(): boolean {
@@ -396,7 +546,10 @@ export default class WebAuthClient {
       return
     }
     this.authenticated = authenticated
-    this.authStateListeners.forEach((listener) => {
+    for (const listener of this.authStateListeners) {
+      if (this.authenticated !== authenticated) {
+        break
+      }
       const reportError = (error: unknown) => {
         console.error('认证状态订阅者执行失败', error)
       }
@@ -405,7 +558,7 @@ export default class WebAuthClient {
       } catch (error) {
         reportError(error)
       }
-    })
+    }
   }
 
   #issuerEndpoint(path: string): string {
