@@ -39,6 +39,8 @@ unified-login:
     max-failures-per-email: 5
     email-lock-duration: 15m
     max-attempts-per-ip-per-minute: 20
+  bootstrap:
+    admin-emails: ${BOOTSTRAP_ADMIN_EMAILS:}
   clients:
     - client-id: demo-web-a
       client-name: Demo Web A
@@ -48,3 +50,7 @@ unified-login:
       client-name: Demo Web B
       redirect-uris:
         - http://localhost:5174/callback
+    - client-id: admin-web
+      client-name: Account Administration
+      redirect-uris:
+        - ${ADMIN_WEB_REDIRECT_URI:http://localhost:5175/callback}

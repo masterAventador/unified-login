@@ -1,6 +1,9 @@
 package com.aventador.unifiedlogin.config;
 
+import com.aventador.unifiedlogin.account.StalePasswordSessionFilter;
+import com.aventador.unifiedlogin.account.UserTokenLock;
 import com.aventador.unifiedlogin.security.LoginPaths;
+import com.aventador.unifiedlogin.user.AppUserRepository;
 import com.nimbusds.jose.JOSEObjectType;
 import com.nimbusds.jose.jwk.JWKSet;
 import com.nimbusds.jose.jwk.RSAKey;
@@ -31,7 +34,9 @@ import org.springframework.security.oauth2.server.authorization.client.Registere
 import org.springframework.security.oauth2.server.authorization.oidc.OidcProviderConfiguration;
 import org.springframework.security.oauth2.server.authorization.settings.AuthorizationServerSettings;
 import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.authentication.AnonymousAuthenticationFilter;
 import org.springframework.security.web.authentication.LoginUrlAuthenticationEntryPoint;
+import org.springframework.security.web.authentication.preauth.AbstractPreAuthenticatedProcessingFilter;
 import org.springframework.security.web.header.writers.DelegatingRequestMatcherHeaderWriter;
 import org.springframework.security.web.header.writers.frameoptions.XFrameOptionsHeaderWriter;
 import org.springframework.security.web.servlet.util.matcher.PathPatternRequestMatcher;
@@ -39,6 +44,7 @@ import org.springframework.security.web.util.matcher.MediaTypeRequestMatcher;
 import org.springframework.security.web.util.matcher.NegatedRequestMatcher;
 import org.springframework.security.web.util.matcher.RequestMatcher;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.transaction.PlatformTransactionManager;
 
 import java.nio.file.Path;
 import java.util.List;
@@ -53,7 +59,10 @@ public class AuthorizationServerConfig {
             RegisteredClientRepository registeredClientRepository,
             AuthorizationServerSettings authorizationServerSettings,
             OAuth2AuthorizationService authorizationService,
-            UserDetailsService userDetailsService) throws Exception {
+            UserDetailsService userDetailsService,
+            UserTokenLock userTokenLock,
+            AppUserRepository userRepository,
+            PlatformTransactionManager transactionManager) throws Exception {
         // Spring Security 7 中该类没有 authorizationServer() 静态工厂（那是旧 1.x 的 API），
         // 用无参构造——照旧文档写静态工厂会编译失败
         OAuth2AuthorizationServerConfigurer authorizationServerConfigurer =
@@ -75,9 +84,15 @@ public class AuthorizationServerConfig {
                         // 这里是**替换**掉框架的刷新 provider 而不是在它前面追加一个，原因见
                         // AccountStatusRefreshTokenAuthenticationProvider 的类注释
                         .tokenEndpoint((tokenEndpoint) -> tokenEndpoint
-                                .authenticationProviders((authenticationProviders) ->
+                                .authenticationProviders((authenticationProviders) -> {
                                         AccountStatusRefreshTokenAuthenticationProvider.guardRefreshTokenProvider(
-                                                authenticationProviders, authorizationService, userDetailsService)))
+                                                authenticationProviders, authorizationService, userDetailsService,
+                                                userTokenLock, transactionManager);
+                                        UserLockedAuthorizationCodeAuthenticationProvider
+                                                .guardAuthorizationCodeProvider(
+                                                        authenticationProviders, authorizationService,
+                                                        userTokenLock, transactionManager);
+                                }))
                         .authorizationServerMetadataEndpoint((metadataEndpoint) -> metadataEndpoint
                                 .authorizationServerMetadataCustomizer(
                                         AuthorizationServerConfig::customizeAdvertisedCapabilities))
@@ -102,7 +117,17 @@ public class AuthorizationServerConfig {
                                 new XFrameOptionsHeaderWriter())))
                 // 必需：/userinfo 端点自身不解析 Bearer token，靠资源服务器过滤器
                 // 先完成认证。缺这一句该端点对任何合法 token 都返回拒绝
-                .oauth2ResourceServer((resourceServer) -> resourceServer.jwt(Customizer.withDefaults()));
+                .oauth2ResourceServer((resourceServer) -> resourceServer.jwt(Customizer.withDefaults()))
+                // SAS 7.1 只校验 prompt=login 的语法，不会重新质询已有会话。
+                // 管理后台切换账号依赖这里真正清除旧主体并在表单登录后放行一次原请求。
+                // SAS 的私有授权请求校验过滤器位于 AbstractPreAuthenticatedProcessingFilter
+                // 之前；放在该锚点之后可确保无效 client/redirect 不会先清掉登录会话。
+                .addFilterAfter(
+                        new PromptLoginAuthenticationFilter(
+                                authorizationServerSettings.getAuthorizationEndpoint()),
+                        AbstractPreAuthenticatedProcessingFilter.class)
+                .addFilterBefore(new StalePasswordSessionFilter(userRepository),
+                        AnonymousAuthenticationFilter.class);
 
         return http.build();
     }

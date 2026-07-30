@@ -1,5 +1,6 @@
 package com.aventador.unifiedlogin.config;
 
+import com.aventador.unifiedlogin.admin.AdminClient;
 import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -18,7 +19,7 @@ import java.util.List;
 import java.util.Objects;
 
 /**
- * 令牌端点的跨域放行。
+ * 浏览器客户端调用令牌端点与管理 API 时的跨域放行。
  *
  * <p>浏览器里的接入方部署在自己的源上（demo-web-a 是 http://localhost:5173），换令牌时
  * 要跨源 POST 到认证中心。缺少 {@code Access-Control-Allow-Origin} 时服务端一切正常——
@@ -46,15 +47,26 @@ public class TokenEndpointCorsConfig {
     public FilterRegistrationBean<CorsFilter> tokenEndpointCorsFilter(
             UnifiedLoginProperties properties,
             AuthorizationServerSettings authorizationServerSettings) {
-        CorsConfiguration configuration = new CorsConfiguration();
-        configuration.setAllowedOrigins(registeredClientOrigins(properties));
-        configuration.setAllowedMethods(List.of(HttpMethod.POST.name()));
+        List<String> allowedOrigins = registeredClientOrigins(properties);
+
+        CorsConfiguration tokenEndpoint = new CorsConfiguration();
+        tokenEndpoint.setAllowedOrigins(allowedOrigins);
+        tokenEndpoint.setAllowedMethods(List.of(HttpMethod.POST.name()));
         // 令牌端点只吃表单参数，放行 Content-Type 足够；多放行一个请求头就多一分被利用的面
-        configuration.setAllowedHeaders(List.of(HttpHeaders.CONTENT_TYPE));
-        configuration.setMaxAge(PREFLIGHT_CACHE_TTL);
+        tokenEndpoint.setAllowedHeaders(List.of(HttpHeaders.CONTENT_TYPE));
+        tokenEndpoint.setMaxAge(PREFLIGHT_CACHE_TTL);
+
+        CorsConfiguration adminApi = new CorsConfiguration();
+        // 管理 API 只供管理后台调用。普通产品即使也是已登记客户端，也不应获得浏览器
+        // 跨域读取管理响应的能力；真正的权限边界仍由 PlatformAdminGuard 的 audience 校验守住。
+        adminApi.setAllowedOrigins(registeredClientOrigins(properties, AdminClient.CLIENT_ID));
+        adminApi.setAllowedMethods(List.of(HttpMethod.GET.name(), HttpMethod.POST.name()));
+        adminApi.setAllowedHeaders(List.of(HttpHeaders.AUTHORIZATION, HttpHeaders.CONTENT_TYPE));
+        adminApi.setMaxAge(PREFLIGHT_CACHE_TTL);
 
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
-        source.registerCorsConfiguration(authorizationServerSettings.getTokenEndpoint(), configuration);
+        source.registerCorsConfiguration(authorizationServerSettings.getTokenEndpoint(), tokenEndpoint);
+        source.registerCorsConfiguration("/admin/**", adminApi);
 
         FilterRegistrationBean<CorsFilter> registration = new FilterRegistrationBean<>(new CorsFilter(source));
         registration.setOrder(Ordered.HIGHEST_PRECEDENCE);
@@ -62,7 +74,15 @@ public class TokenEndpointCorsConfig {
     }
 
     private static List<String> registeredClientOrigins(UnifiedLoginProperties properties) {
+        return registeredClientOrigins(properties, null);
+    }
+
+    private static List<String> registeredClientOrigins(
+            UnifiedLoginProperties properties,
+            String requiredClientId) {
         return properties.clientsOrEmpty().stream()
+                .filter((client) -> requiredClientId == null
+                        || requiredClientId.equals(client.clientId()))
                 .map(UnifiedLoginProperties.ClientConfig::redirectUris)
                 .filter(Objects::nonNull)
                 .flatMap(List::stream)

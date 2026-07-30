@@ -1,5 +1,6 @@
 package com.aventador.unifiedlogin.config;
 
+import com.aventador.unifiedlogin.account.UserTokenLock;
 import org.junit.jupiter.api.Test;
 import org.springframework.security.authentication.AuthenticationProvider;
 import org.springframework.security.core.Authentication;
@@ -8,12 +9,14 @@ import org.springframework.security.core.userdetails.UsernameNotFoundException;
 import org.springframework.security.oauth2.server.authorization.InMemoryOAuth2AuthorizationService;
 import org.springframework.security.oauth2.server.authorization.OAuth2AuthorizationService;
 import org.springframework.security.oauth2.server.authorization.authentication.OAuth2RefreshTokenAuthenticationProvider;
+import org.springframework.transaction.PlatformTransactionManager;
 
 import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
+import static org.mockito.Mockito.mock;
 
 /**
  * 钉住「账号状态回查确实挂上去了」这件事本身。
@@ -31,6 +34,10 @@ class AccountStatusRefreshTokenAuthenticationProviderTest {
         throw new UsernameNotFoundException(username);
     };
 
+    private final UserTokenLock userTokenLock = mock(UserTokenLock.class);
+
+    private final PlatformTransactionManager transactionManager = mock(PlatformTransactionManager.class);
+
     @Test
     void wrapsFrameworkRefreshTokenProviderInPlace() {
         AuthenticationProvider unrelatedProvider = unrelatedProvider();
@@ -38,7 +45,8 @@ class AccountStatusRefreshTokenAuthenticationProviderTest {
                 List.of(unrelatedProvider, frameworkRefreshTokenProvider()));
 
         AccountStatusRefreshTokenAuthenticationProvider.guardRefreshTokenProvider(
-                providers, this.authorizationService, this.userDetailsService);
+                providers, this.authorizationService, this.userDetailsService,
+                this.userTokenLock, this.transactionManager);
 
         assertThat(providers).hasSize(2);
         // 其余 provider 必须原封不动：装配逻辑越界会把授权码等授权类型一并改掉
@@ -52,7 +60,8 @@ class AccountStatusRefreshTokenAuthenticationProviderTest {
 
         assertThatExceptionOfType(IllegalStateException.class)
                 .isThrownBy(() -> AccountStatusRefreshTokenAuthenticationProvider.guardRefreshTokenProvider(
-                        providers, this.authorizationService, this.userDetailsService));
+                        providers, this.authorizationService, this.userDetailsService,
+                        this.userTokenLock, this.transactionManager));
     }
 
     private OAuth2RefreshTokenAuthenticationProvider frameworkRefreshTokenProvider() {

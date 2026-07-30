@@ -205,6 +205,32 @@ describe('WebAuthClient.login', () => {
     })
   })
 
+  it('切换账号时由 SDK 添加 prompt=login 强制重新认证', async () => {
+    const storage = new MemoryStorage()
+    const assign = vi.fn()
+    vi.stubGlobal('sessionStorage', storage)
+    vi.stubGlobal('location', {
+      assign,
+      href: 'http://localhost:5174/',
+      origin: 'http://localhost:5174',
+      pathname: '/',
+      search: '',
+    })
+    vi.stubGlobal('crypto', {
+      getRandomValues: (target: Uint8Array) => {
+        target.fill(0)
+        return target
+      },
+      randomUUID: () => 'switch-account-state',
+      subtle: webCrypto.subtle,
+    })
+
+    await new WebAuthClient(CONFIG).login({ prompt: 'login' })
+
+    const authorizationUrl = new URL(assign.mock.calls[0]?.[0] as string)
+    expect(authorizationUrl.searchParams.get('prompt')).toBe('login')
+  })
+
   it('登录保护标记写入失败时在失效现有身份与跳转前终止', async () => {
     const storage = new LogoutMarkerWriteFailureStorage()
     storage.setItem('demo-web-b.state', 'expected-state')

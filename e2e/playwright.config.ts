@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const authServerDirectory = fileURLToPath(new URL('../auth-server/', import.meta.url))
+const adminWebDirectory = fileURLToPath(new URL('../admin-web/', import.meta.url))
 const demoADirectory = fileURLToPath(new URL('../demo/demo-web-a/', import.meta.url))
 const demoBDirectory = fileURLToPath(new URL('../demo/demo-web-b/', import.meta.url))
 const demoApiDirectory = fileURLToPath(new URL('../demo/demo-api/', import.meta.url))
@@ -46,6 +47,15 @@ export default defineConfig({
       command: 'pnpm build && pnpm preview',
       cwd: demoBDirectory,
       url: 'http://127.0.0.1:5174',
+      timeout: 60_000,
+      reuseExistingServer: false,
+      gracefulShutdown: { signal: 'SIGTERM', timeout: 5_000 },
+    },
+    {
+      name: '账号管理后台',
+      command: 'pnpm build && pnpm preview',
+      cwd: adminWebDirectory,
+      url: 'http://localhost:5175',
       timeout: 60_000,
       reuseExistingServer: false,
       gracefulShutdown: { signal: 'SIGTERM', timeout: 5_000 },

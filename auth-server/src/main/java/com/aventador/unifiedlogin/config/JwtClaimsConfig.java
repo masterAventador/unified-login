@@ -8,6 +8,7 @@ import com.nimbusds.jose.jwk.source.JWKSource;
 import com.nimbusds.jose.proc.SecurityContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.security.core.authority.FactorGrantedAuthority;
 import org.springframework.security.crypto.keygen.Base64StringKeyGenerator;
 import org.springframework.security.crypto.keygen.StringKeyGenerator;
 import org.springframework.security.oauth2.core.OAuth2AuthenticationException;
@@ -66,6 +67,21 @@ public class JwtClaimsConfig {
                 throw new OAuth2AuthenticationException(
                         new OAuth2Error(OAuth2ErrorCodes.INVALID_GRANT, "签发令牌时账号不可用", null));
             }
+            context.getPrincipal().getAuthorities().stream()
+                    .filter(FactorGrantedAuthority.class::isInstance)
+                    .map(FactorGrantedAuthority.class::cast)
+                    .filter((authority) -> FactorGrantedAuthority.PASSWORD_AUTHORITY
+                            .equals(authority.getAuthority()))
+                    .map(FactorGrantedAuthority::getIssuedAt)
+                    .filter(user.getPasswordChangedAt()::isAfter)
+                    .findFirst()
+                    .ifPresent((ignored) -> {
+                        throw new OAuth2AuthenticationException(
+                                new OAuth2Error(
+                                        OAuth2ErrorCodes.INVALID_GRANT,
+                                        "签发令牌时登录会话已过期",
+                                        null));
+                    });
 
             context.getClaims().subject(user.getId().toString());
             context.getClaims().claim("email", user.getEmail());
