@@ -1,5 +1,6 @@
 package com.aventador.unifiedlogin.config;
 
+import com.aventador.unifiedlogin.account.PasswordChangeRateLimitFilter;
 import com.aventador.unifiedlogin.security.LoginAttemptService;
 import com.aventador.unifiedlogin.security.LoginPaths;
 import com.aventador.unifiedlogin.security.LoginRateLimitFilter;
@@ -12,6 +13,7 @@ import org.springframework.core.annotation.Order;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.access.intercept.AuthorizationFilter;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
 
 @Configuration
@@ -34,7 +36,9 @@ public class SecurityConfig {
                         .loginPage(LoginPaths.LOGIN))
                 // 必须排在认证过滤器之前：被锁的提交要在触发密码校验之前就被挡掉
                 .addFilterBefore(new LoginRateLimitFilter(loginAttemptService),
-                        UsernamePasswordAuthenticationFilter.class);
+                        UsernamePasswordAuthenticationFilter.class)
+                .addFilterBefore(new PasswordChangeRateLimitFilter(loginAttemptService),
+                        AuthorizationFilter.class);
 
         return http.build();
     }

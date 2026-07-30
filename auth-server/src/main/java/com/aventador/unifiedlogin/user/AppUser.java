@@ -95,6 +95,12 @@ public class AppUser implements Persistable<UUID> {
         return passwordHash;
     }
 
+    public void changePassword(String newPasswordHash, Instant changedAt) {
+        this.passwordHash = newPasswordHash;
+        this.passwordChangedAt = changedAt;
+        this.updatedAt = changedAt;
+    }
+
     public UserStatus getStatus() {
         return status;
     }
