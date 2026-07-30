@@ -1,4 +1,4 @@
-import { completeLogin, currentUser, isLoggedIn, startLogin } from './auth'
+import { completeLogin, currentUser, isLoggedIn, logout, startLogin } from './auth'
 
 const app = document.querySelector<HTMLDivElement>('#app')!
 
@@ -30,7 +30,18 @@ async function render(): Promise<void> {
   }
 
   if (isLoggedIn()) {
-    app.replaceChildren(paragraph('signed-in-user', `已登录：${currentUser()}`))
+    const logoutButton = document.createElement('button')
+    logoutButton.type = 'button'
+    logoutButton.setAttribute('data-testid', 'logout-button')
+    logoutButton.textContent = '退出当前产品'
+    logoutButton.addEventListener('click', () => {
+      logout()
+      void render()
+    })
+    app.replaceChildren(
+      paragraph('signed-in-user', `已登录：${currentUser()}`),
+      logoutButton,
+    )
     return
   }
 

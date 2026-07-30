@@ -3,35 +3,51 @@
 ## 前置
 
 - Java 17、Maven、Node 22+、pnpm、Docker（供 Testcontainers 使用）
-- 本地 PostgreSQL：`docker run --rm -e POSTGRES_DB=unified_login -e POSTGRES_USER=unified_login -e POSTGRES_PASSWORD=unified_login -p 5432:5432 postgres:16-alpine`
+- 本地 PostgreSQL：`docker run --rm -e POSTGRES_DB=unified_login -e POSTGRES_USER=unified_login -e POSTGRES_PASSWORD=unified_login -p 127.0.0.1:5432:5432 postgres:16-alpine`
 
 若本机 5432 已被别的 PostgreSQL 占用，把容器映射到其他端口并用 `DB_URL` 指过去即可，
-例如映射 `-p 55432:5432` 后以 `DB_URL=jdbc:postgresql://127.0.0.1:55432/unified_login` 启动认证中心。
+例如映射 `-p 127.0.0.1:55432:5432` 后以 `DB_URL=jdbc:postgresql://127.0.0.1:55432/unified_login` 启动认证中心。
 这只是换了一个数据库地址，读取配置与连接的代码路径与生产完全相同。
 
 ## 启动
 
 1. 认证中心：`cd auth-server && ./mvnw spring-boot:run`（监听 9000）
 2. demo-web-a：`cd demo/demo-web-a && pnpm install && pnpm dev`（监听 5173）
+3. Web SDK：`cd sdk/web-ts && pnpm install`
+4. demo-web-b：`cd demo/demo-web-b && pnpm install && pnpm dev`（监听 5174）
 
 ## 端到端验收
 
+先在单独终端启动隔离数据库：
+
 ```bash
-cd e2e && pnpm install && pnpm test
+docker run --rm --name unified-login-e2e-postgres \
+  -e POSTGRES_DB=unified_login \
+  -e POSTGRES_USER=unified_login \
+  -e POSTGRES_PASSWORD=unified_login \
+  -p 127.0.0.1:55432:5432 postgres:16-alpine
 ```
+
+首次运行或锁文件变化后安装四个前端包的依赖，再执行测试：
+
+```bash
+pnpm --dir sdk/web-ts install --frozen-lockfile
+pnpm --dir demo/demo-web-a install --frozen-lockfile
+pnpm --dir demo/demo-web-b install --frozen-lockfile
+PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 pnpm --dir e2e install --frozen-lockfile
+pnpm --dir e2e test
+```
+
+E2E 固定连接映射到 55432 的隔离 PostgreSQL。数据库就绪后，不要手工启动其他服务：
+Playwright 会从生产构建自动拉起认证中心、demo-web-a 和 demo-web-b，并在测试结束后停止它们。
+运行前应确认 9000、5173、5174 空闲；配置不会复用已有进程，以免误测开发服务器或其他项目。
 
 配置已用 `channel: "chrome"` 复用本机 Google Chrome，**不要执行 `playwright install`**。
-安装依赖时用 `PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 pnpm install` 可避免顺带下载一份 Chromium。
+`PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1` 可避免安装 E2E 依赖时顺带下载一份 Chromium。
 
-一整轮 E2E 只会向 `/login` 提交 6 次（五条用例分别是 1、1、1、0、2 次），而地址限流的阈值是每分钟 20 次，
+当前一整轮 12 条 E2E 只会向 `/login` 提交 11 次，而地址限流的阈值是每分钟 20 次，
 因此**按生产默认配置跑一轮不会触发限流**，不需要为验收调整任何阈值。
-只有在一分钟内反复重跑五轮以上时才会撞上。真要密集重跑，用环境变量把阈值调高：
-
-```bash
-UNIFIED_LOGIN_LOGIN_RATE_LIMIT_MAXATTEMPTSPERIPPERMINUTE=1000 ./mvnw spring-boot:run
-```
-
-这是**配置值差异，不是代码分支**——限流的判定逻辑与生产完全是同一条路径，只是阈值不同。
+每次执行命令都会启动新的认证中心进程，进程内的地址计数不会跨轮累计。
 账号维度的锁定阈值不要调整，E2E 用例本身不会触发它。
 
 ## 手工验证限流
@@ -50,4 +66,5 @@ UNIFIED_LOGIN_LOGIN_RATE_LIMIT_MAXATTEMPTSPERIPPERMINUTE=1000 ./mvnw spring-boot
 
 ## 收尾
 
-验收结束后停掉 PostgreSQL 容器与两个开发服务，避免端口与资源占用。
+Playwright 会自动停止认证中心与两个 Demo。验收结束后再停掉 PostgreSQL 容器，
+并确认 9000、5173、5174、55432 已释放。

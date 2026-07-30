@@ -15,17 +15,27 @@ import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.OAuth2AuthorizationServerConfiguration;
 import org.springframework.security.config.annotation.web.configurers.oauth2.server.authorization.OAuth2AuthorizationServerConfigurer;
 import org.springframework.security.core.userdetails.UserDetailsService;
+import org.springframework.security.oauth2.core.AuthorizationGrantType;
+import org.springframework.security.oauth2.core.ClientAuthenticationMethod;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
+import org.springframework.security.oauth2.server.authorization.OAuth2AuthorizationServerMetadata;
 import org.springframework.security.oauth2.server.authorization.OAuth2AuthorizationService;
 import org.springframework.security.oauth2.server.authorization.JdbcOAuth2AuthorizationService;
 import org.springframework.security.oauth2.server.authorization.client.RegisteredClientRepository;
+import org.springframework.security.oauth2.server.authorization.oidc.OidcProviderConfiguration;
 import org.springframework.security.oauth2.server.authorization.settings.AuthorizationServerSettings;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.LoginUrlAuthenticationEntryPoint;
+import org.springframework.security.web.header.writers.DelegatingRequestMatcherHeaderWriter;
+import org.springframework.security.web.header.writers.frameoptions.XFrameOptionsHeaderWriter;
+import org.springframework.security.web.servlet.util.matcher.PathPatternRequestMatcher;
 import org.springframework.security.web.util.matcher.MediaTypeRequestMatcher;
+import org.springframework.security.web.util.matcher.NegatedRequestMatcher;
+import org.springframework.security.web.util.matcher.RequestMatcher;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.nio.file.Path;
+import java.util.List;
 import java.util.Objects;
 
 @Configuration
@@ -42,6 +52,8 @@ public class AuthorizationServerConfig {
         // 用无参构造——照旧文档写静态工厂会编译失败
         OAuth2AuthorizationServerConfigurer authorizationServerConfigurer =
                 new OAuth2AuthorizationServerConfigurer();
+        RequestMatcher nonAuthorizationEndpoint = new NegatedRequestMatcher(
+                PathPatternRequestMatcher.pathPattern(authorizationServerSettings.getAuthorizationEndpoint()));
 
         http
                 .securityMatcher(authorizationServerConfigurer.getEndpointsMatcher())
@@ -60,18 +72,55 @@ public class AuthorizationServerConfig {
                                 .authenticationProviders((authenticationProviders) ->
                                         AccountStatusRefreshTokenAuthenticationProvider.guardRefreshTokenProvider(
                                                 authenticationProviders, authorizationService, userDetailsService)))
-                        .oidc(Customizer.withDefaults()))
+                        .authorizationServerMetadataEndpoint((metadataEndpoint) -> metadataEndpoint
+                                .authorizationServerMetadataCustomizer(
+                                        AuthorizationServerConfig::customizeAdvertisedCapabilities))
+                        .oidc((oidc) -> oidc
+                                .providerConfigurationEndpoint((providerConfiguration) ->
+                                        providerConfiguration.providerConfigurationCustomizer(
+                                                AuthorizationServerConfig::customizeAdvertisedCapabilities))))
                 .authorizeHttpRequests((authorize) -> authorize
                         .anyRequest().authenticated())
                 .exceptionHandling((exceptions) -> exceptions
                         .defaultAuthenticationEntryPointFor(
-                                new LoginUrlAuthenticationEntryPoint(LoginPaths.LOGIN),
+                                new PromptNoneAuthenticationEntryPoint(
+                                        registeredClientRepository,
+                                        new LoginUrlAuthenticationEntryPoint(LoginPaths.LOGIN)),
                                 new MediaTypeRequestMatcher(MediaType.TEXT_HTML)))
+                // 静默续签通过隐藏 iframe 请求授权端点，该响应不能带 DENY。
+                // 其他认证中心端点仍由定向 header writer 保持点击劫持保护。
+                .headers((headers) -> headers
+                        .frameOptions((frameOptions) -> frameOptions.disable())
+                        .addHeaderWriter(new DelegatingRequestMatcherHeaderWriter(
+                                nonAuthorizationEndpoint,
+                                new XFrameOptionsHeaderWriter())))
                 // 必需：/userinfo 端点自身不解析 Bearer token，靠资源服务器过滤器
                 // 先完成认证。缺这一句该端点对任何合法 token 都返回拒绝
                 .oauth2ResourceServer((resourceServer) -> resourceServer.jwt(Customizer.withDefaults()));
 
         return http.build();
+    }
+
+    private static void customizeAdvertisedCapabilities(OAuth2AuthorizationServerMetadata.Builder metadata) {
+        metadata.grantTypes(AuthorizationServerConfig::replaceAdvertisedGrantTypes);
+        metadata.tokenEndpointAuthenticationMethods(
+                AuthorizationServerConfig::includePublicClientAuthentication);
+    }
+
+    private static void customizeAdvertisedCapabilities(OidcProviderConfiguration.Builder metadata) {
+        metadata.grantTypes(AuthorizationServerConfig::replaceAdvertisedGrantTypes);
+        metadata.tokenEndpointAuthenticationMethods(
+                AuthorizationServerConfig::includePublicClientAuthentication);
+    }
+
+    private static void replaceAdvertisedGrantTypes(List<String> grantTypes) {
+        grantTypes.clear();
+        grantTypes.add(AuthorizationGrantType.AUTHORIZATION_CODE.getValue());
+        grantTypes.add(AuthorizationGrantType.REFRESH_TOKEN.getValue());
+    }
+
+    private static void includePublicClientAuthentication(List<String> authenticationMethods) {
+        authenticationMethods.add(ClientAuthenticationMethod.NONE.getValue());
     }
 
     @Bean

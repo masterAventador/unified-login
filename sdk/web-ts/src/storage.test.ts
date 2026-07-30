@@ -1,0 +1,80 @@
+import { describe, expect, it } from 'vitest'
+
+import {
+  AuthorizationRequestStore,
+  StateIndexedAuthorizationRequestStore,
+} from './storage'
+import { MemoryStorage } from './test-support'
+
+describe('AuthorizationRequestStore', () => {
+  it('用客户端命名空间保存 state 与 verifier，并在取出时立即删除', () => {
+    const storage = new MemoryStorage()
+    const store = new AuthorizationRequestStore('demo-web-a', storage)
+
+    store.save({ state: 'expected-state', verifier: 'code-verifier' })
+
+    expect(storage.getItem('demo-web-a.state')).toBe('expected-state')
+    expect(storage.getItem('demo-web-a.code_verifier')).toBe('code-verifier')
+    expect(store.take()).toEqual({
+      state: 'expected-state',
+      verifier: 'code-verifier',
+    })
+    expect(storage.length).toBe(0)
+    expect(store.take()).toBeNull()
+  })
+
+  it('任一字段缺失时拒绝返回残缺请求并清理另一字段', () => {
+    const storage = new MemoryStorage()
+    const store = new AuthorizationRequestStore('demo-web-a', storage)
+    storage.setItem('demo-web-a.state', 'orphaned-state')
+
+    expect(store.take()).toBeNull()
+    expect(storage.length).toBe(0)
+  })
+
+  it('只取出 state 匹配的请求，错误 state 不得消费当前请求', () => {
+    const storage = new MemoryStorage()
+    const store = new AuthorizationRequestStore('demo-web-a', storage)
+    store.save({ state: 'current-state', verifier: 'current-verifier' })
+
+    expect(store.takeIfState('stale-state')).toBeNull()
+    expect(store.takeIfState('current-state')).toEqual({
+      state: 'current-state',
+      verifier: 'current-verifier',
+    })
+    expect(storage.length).toBe(0)
+  })
+
+  it('超时清理只删除发起它的 state，不误删后来写入的请求', () => {
+    const storage = new MemoryStorage()
+    const store = new AuthorizationRequestStore('demo-web-a', storage)
+    store.save({ state: 'new-state', verifier: 'new-verifier' })
+
+    store.clearIfState('old-state')
+
+    expect(storage.getItem('demo-web-a.state')).toBe('new-state')
+    expect(storage.getItem('demo-web-a.code_verifier')).toBe('new-verifier')
+  })
+})
+
+describe('StateIndexedAuthorizationRequestStore', () => {
+  it('按 state 并存多个 PKCE 请求，取出一个时不影响另一个', () => {
+    const storage = new MemoryStorage()
+    const store = new StateIndexedAuthorizationRequestStore(
+      'demo-web-b.silent',
+      storage,
+    )
+    store.save({ state: 'first-state', verifier: 'first-verifier' })
+    store.save({ state: 'second-state', verifier: 'second-verifier' })
+
+    expect(store.takeIfState('first-state')).toEqual({
+      state: 'first-state',
+      verifier: 'first-verifier',
+    })
+    expect(store.takeIfState('second-state')).toEqual({
+      state: 'second-state',
+      verifier: 'second-verifier',
+    })
+    expect(storage.length).toBe(0)
+  })
+})
