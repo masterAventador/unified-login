@@ -1,6 +1,7 @@
 package com.aventador.unifiedlogin.config;
 
 import com.aventador.unifiedlogin.account.PasswordChangeRateLimitFilter;
+import com.aventador.unifiedlogin.account.UserTokenLock;
 import com.aventador.unifiedlogin.admin.PlatformAdminGuard;
 import com.aventador.unifiedlogin.security.LoginAttemptService;
 import com.aventador.unifiedlogin.security.LoginPaths;
@@ -14,6 +15,8 @@ import org.springframework.core.annotation.Order;
 import org.springframework.security.config.Customizer;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
+import org.springframework.security.core.userdetails.UserDetailsService;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.oauth2.server.resource.web.BearerTokenAuthenticationEntryPoint;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.access.intercept.AuthorizationFilter;
@@ -22,6 +25,7 @@ import org.springframework.security.web.authentication.UsernamePasswordAuthentic
 import org.springframework.security.web.servlet.util.matcher.PathPatternRequestMatcher;
 import org.springframework.security.web.util.matcher.NegatedRequestMatcher;
 import org.springframework.security.web.util.matcher.RequestMatcher;
+import org.springframework.transaction.PlatformTransactionManager;
 
 @Configuration
 @EnableWebSecurity
@@ -32,7 +36,12 @@ public class SecurityConfig {
     @Order(2)
     public SecurityFilterChain defaultSecurityFilterChain(HttpSecurity http,
                                                           LoginAttemptService loginAttemptService,
-                                                          PlatformAdminGuard platformAdminGuard) throws Exception {
+                                                          PlatformAdminGuard platformAdminGuard,
+                                                          UserDetailsService userDetailsService,
+                                                          PasswordEncoder passwordEncoder,
+                                                          UserTokenLock userTokenLock,
+                                                          PlatformTransactionManager transactionManager)
+            throws Exception {
         RequestMatcher adminEndpoints = PathPatternRequestMatcher.pathPattern("/admin/**");
         http
                 .authorizeHttpRequests((authorize) -> authorize
@@ -44,6 +53,10 @@ public class SecurityConfig {
                 .formLogin((formLogin) -> formLogin
                         // 必须指定自定义登录页：默认配置会启用登录页生成过滤器，遮蔽 Thymeleaf 模板
                         .loginPage(LoginPaths.LOGIN))
+                // 密码校验与改密/后台重置必须持有同一用户行锁，否则旧 hash 可在改密提交后
+                // 才完成校验，并得到一个认证时间反而更新的旧密码会话。
+                .authenticationProvider(new UserLockedPasswordAuthenticationProvider(
+                        userDetailsService, passwordEncoder, userTokenLock, transactionManager))
                 // 管理 SPA 用阶段二 SDK 拿到的 access token 调管理 API；默认链若不启用
                 // resource server，只会把合法 Bearer token 当匿名请求重定向到登录页。
                 .oauth2ResourceServer((resourceServer) -> resourceServer.jwt(Customizer.withDefaults()))

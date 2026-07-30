@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
+import viteConfig from '../vite.config'
 import { createAdminRuntimeConfig } from './config'
 
 describe('createAdminRuntimeConfig', () => {
@@ -22,5 +23,12 @@ describe('createAdminRuntimeConfig', () => {
       'https://auth.example.com/nested',
       'https://admin.example.com',
     )).toThrow('认证中心地址不能包含路径')
+  })
+
+  it('开发与预览服务都使用已注册回调对应的 localhost 主机名', () => {
+    expect(viteConfig).toMatchObject({
+      server: { host: 'localhost', port: 5175, strictPort: true },
+      preview: { host: 'localhost', port: 5175, strictPort: true },
+    })
   })
 })

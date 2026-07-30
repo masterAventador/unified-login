@@ -67,7 +67,7 @@ export class AdminDomView {
     shell.append(
       this.filters(page, actions, query),
       this.userTable(page, actions),
-      this.pagination(page, actions),
+      this.pagination(page, actions, query),
     )
     this.root.replaceChildren(shell)
   }
@@ -187,22 +187,26 @@ export class AdminDomView {
     const reset = this.button('重置密码', 'ghost')
     reset.setAttribute('data-testid', 'reset-password')
     reset.addEventListener('click', () => {
-      const newPassword = window.prompt(`为 ${user.email} 设置新密码（8–64 个字符）`)
-      if (newPassword !== null) {
-        void actions.resetPassword(user.id, newPassword)
-      }
+      reset.disabled = true
+      this.root.append(this.resetPasswordDialog(user, actions, () => {
+        reset.disabled = false
+      }))
     })
     cell.append(statusAction, reset)
     return cell
   }
 
-  private pagination(page: UserPage, actions: AdminActions): HTMLElement {
+  private pagination(
+    page: UserPage,
+    actions: AdminActions,
+    query: UserQuery,
+  ): HTMLElement {
     const navigation = this.element('nav', 'pagination')
     navigation.setAttribute('aria-label', '用户列表分页')
     const previous = this.button('上一页', 'ghost')
     previous.disabled = page.page <= 0
     previous.addEventListener('click', () => {
-      void actions.changeQuery(this.pageQuery(page, page.page - 1))
+      void actions.changeQuery(this.pageQuery(query, page.page - 1))
     })
     const position = this.text(
       page.totalPages === 0 ? '第 0 / 0 页' : `第 ${page.page + 1} / ${page.totalPages} 页`,
@@ -211,21 +215,73 @@ export class AdminDomView {
     const next = this.button('下一页', 'ghost')
     next.disabled = page.page + 1 >= page.totalPages
     next.addEventListener('click', () => {
-      void actions.changeQuery(this.pageQuery(page, page.page + 1))
+      void actions.changeQuery(this.pageQuery(query, page.page + 1))
     })
     navigation.append(previous, position, next)
     return navigation
   }
 
-  private pageQuery(page: UserPage, targetPage: number): UserQuery {
-    const email = this.root.querySelector<HTMLInputElement>('[name="email"]')?.value ?? ''
-    const status = this.root.querySelector<HTMLSelectElement>('[name="status"]')?.value ?? ''
+  private pageQuery(query: UserQuery, targetPage: number): UserQuery {
     return {
-      email,
-      status: status as UserStatus | '',
+      email: query.email,
+      status: query.status,
       page: targetPage,
-      size: page.size,
+      size: query.size,
     }
+  }
+
+  private resetPasswordDialog(
+    user: AdminUser,
+    actions: AdminActions,
+    onCancel: () => void,
+  ): HTMLElement {
+    const backdrop = this.element('div', 'dialog-backdrop')
+    const panel = this.element('section', 'password-dialog')
+    panel.setAttribute('role', 'dialog')
+    panel.setAttribute('aria-modal', 'true')
+    panel.setAttribute('aria-labelledby', 'reset-password-title')
+    panel.setAttribute('data-testid', 'reset-password-dialog')
+
+    const title = this.document.createElement('h2')
+    title.id = 'reset-password-title'
+    title.textContent = '重置密码'
+    const detail = this.text(`为 ${user.email} 设置新密码`, 'state-detail')
+
+    const form = this.element('form', 'password-form')
+    form.setAttribute('data-testid', 'reset-password-form')
+    const label = this.document.createElement('label')
+    label.htmlFor = 'reset-new-password'
+    label.textContent = '新密码（8–64 个字符）'
+    const password = this.document.createElement('input')
+    password.id = 'reset-new-password'
+    password.name = 'newPassword'
+    password.type = 'password'
+    password.required = true
+    password.minLength = 8
+    password.maxLength = 64
+    password.autocomplete = 'new-password'
+    password.setAttribute('data-testid', 'new-password')
+
+    const actionsRow = this.element('div', 'dialog-actions')
+    const cancel = this.button('取消', 'ghost')
+    const confirm = this.button('确认重置', 'danger')
+    confirm.type = 'submit'
+    cancel.addEventListener('click', () => {
+      backdrop.remove()
+      onCancel()
+    })
+    form.addEventListener('submit', (event) => {
+      event.preventDefault()
+      cancel.disabled = true
+      confirm.disabled = true
+      void actions.resetPassword(user.id, password.value)
+    })
+
+    actionsRow.append(cancel, confirm)
+    form.append(label, password, actionsRow)
+    panel.append(title, detail, form)
+    backdrop.append(panel)
+    return backdrop
   }
 
   private statePanel(title: string, testId: string): HTMLElement {

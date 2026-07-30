@@ -12,6 +12,7 @@ class MemoryElement {
   textContent: string | null = null
   type = ''
   value = ''
+  removed = false
 
   constructor(readonly tagName: string) {}
 
@@ -33,6 +34,10 @@ class MemoryElement {
 
   addEventListener(type: string, listener: EventListener): void {
     this.listeners.set(type, listener)
+  }
+
+  remove(): void {
+    this.removed = true
   }
 }
 
@@ -127,6 +132,117 @@ describe('AdminDomView', () => {
       .toBe('alice@example.com')
     expect(controls.find((element) => element.tagName === 'select')?.value)
       .toBe('DISABLED')
+  })
+
+  it('翻页沿用已生效的筛选条件而不是输入框中尚未提交的值', () => {
+    const document = new MemoryDocument()
+    const root = new MemoryElement('main')
+    const changeQuery = vi.fn()
+    const actions: AdminActions = {
+      changeQuery,
+      disable: vi.fn(),
+      enable: vi.fn(),
+      resetPassword: vi.fn(),
+      logout: vi.fn(),
+    }
+
+    new AdminDomView(
+      document as unknown as Document,
+      root as unknown as HTMLElement,
+    ).showUsers({
+      content: [],
+      page: 0,
+      size: 20,
+      totalElements: 40,
+      totalPages: 2,
+    }, actions, {
+      email: 'applied@example.com',
+      status: 'ACTIVE',
+      page: 0,
+      size: 20,
+    })
+
+    const controls = descendants(root)
+    const email = controls.find((element) => element.tagName === 'input')
+    const status = controls.find((element) => element.tagName === 'select')
+    const next = controls.find((element) => element.textContent === '下一页')
+    expect(email).toBeDefined()
+    expect(status).toBeDefined()
+    expect(next).toBeDefined()
+    email!.value = 'draft@example.com'
+    status!.value = 'DISABLED'
+    next!.listeners.get('click')!(new Event('click'))
+
+    expect(changeQuery).toHaveBeenCalledWith({
+      email: 'applied@example.com',
+      status: 'ACTIVE',
+      page: 1,
+      size: 20,
+    })
+  })
+
+  it('在密码输入框中收集重置密码且提交给对应账号', () => {
+    const document = new MemoryDocument()
+    const root = new MemoryElement('main')
+    const resetPassword = vi.fn().mockResolvedValue(undefined)
+    const actions: AdminActions = {
+      changeQuery: vi.fn(),
+      disable: vi.fn(),
+      enable: vi.fn(),
+      resetPassword,
+      logout: vi.fn(),
+    }
+
+    new AdminDomView(
+      document as unknown as Document,
+      root as unknown as HTMLElement,
+    ).showUsers({
+      content: [{
+        id: 'target-user',
+        email: 'target@example.com',
+        status: 'ACTIVE',
+        emailVerified: false,
+        platformAdmin: false,
+        passwordChangedAt: '2026-07-31T00:00:00Z',
+        createdAt: '2026-07-31T00:00:00Z',
+        updatedAt: '2026-07-31T00:00:00Z',
+      }],
+      page: 0,
+      size: 20,
+      totalElements: 1,
+      totalPages: 1,
+    }, actions, {
+      email: '',
+      status: '',
+      page: 0,
+      size: 20,
+    })
+
+    const reset = descendants(root).find(
+      (element) => element.attributes.get('data-testid') === 'reset-password',
+    )
+    expect(reset).toBeDefined()
+    reset!.listeners.get('click')!(new Event('click'))
+
+    const dialog = descendants(root).find(
+      (element) => element.attributes.get('data-testid') === 'reset-password-dialog',
+    )
+    const password = descendants(root).find(
+      (element) => element.attributes.get('data-testid') === 'new-password',
+    )
+    const form = descendants(root).find((element) => (
+      element.tagName === 'form'
+      && element.attributes.get('data-testid') === 'reset-password-form'
+    ))
+    expect(dialog?.attributes.get('role')).toBe('dialog')
+    expect(dialog?.attributes.get('aria-modal')).toBe('true')
+    expect(password?.type).toBe('password')
+    password!.value = 'new secret password'
+    form!.listeners.get('submit')!({
+      preventDefault: vi.fn(),
+    } as unknown as Event)
+
+    expect(resetPassword).toHaveBeenCalledWith('target-user', 'new secret password')
   })
 
   it('无权限态只显示固定文案，不暴露服务端异常', () => {

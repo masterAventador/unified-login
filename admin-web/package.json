@@ -4,9 +4,9 @@
   "type": "module",
   "scripts": {
     "build:sdk": "pnpm --dir ../sdk/web-ts build",
-    "dev": "pnpm run build:sdk && vite --force --host 127.0.0.1 --port 5175 --strictPort",
+    "dev": "pnpm run build:sdk && vite --force",
     "build": "pnpm run build:sdk && tsc -b && vite build",
-    "preview": "vite preview --host 127.0.0.1 --port 5175 --strictPort",
+    "preview": "vite preview",
     "test": "vitest run",
     "typecheck": "pnpm run build:sdk && tsc --noEmit"
   },

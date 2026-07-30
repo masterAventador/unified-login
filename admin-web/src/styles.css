@@ -230,6 +230,49 @@ th {
   background: #fff5f2;
 }
 
+.dialog-backdrop {
+  position: fixed;
+  z-index: 10;
+  display: grid;
+  inset: 0;
+  place-items: center;
+  padding: 20px;
+  background: rgb(17 24 39 / 45%);
+}
+
+.password-dialog {
+  width: min(440px, 100%);
+  padding: 28px;
+  border-radius: 16px;
+  background: #fff;
+  box-shadow: 0 24px 80px rgb(17 24 39 / 25%);
+}
+
+.password-dialog h2 {
+  margin: 0;
+  color: #111827;
+  font-size: 24px;
+}
+
+.password-form {
+  display: grid;
+  gap: 10px;
+  margin-top: 20px;
+}
+
+.password-form label {
+  color: #30415f;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 12px;
+}
+
 @media (max-width: 720px) {
   .admin-shell {
     width: min(100% - 20px, 1180px);

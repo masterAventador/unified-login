@@ -55,7 +55,7 @@ export default defineConfig({
       name: '账号管理后台',
       command: 'pnpm build && pnpm preview',
       cwd: adminWebDirectory,
-      url: 'http://127.0.0.1:5175',
+      url: 'http://localhost:5175',
       timeout: 60_000,
       reuseExistingServer: false,
       gracefulShutdown: { signal: 'SIGTERM', timeout: 5_000 },

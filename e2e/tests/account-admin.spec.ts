@@ -116,10 +116,11 @@ test.describe.serial('阶段四账号失效真实链路', () => {
       response.request().method() === 'POST'
       && new URL(response.url()).pathname.endsWith('/reset-password')
     ))
-    managementPage.once('dialog', async (dialog) => {
-      await dialog.accept(RESET_PASSWORD)
-    })
     await row.getByTestId('reset-password').click()
+    const resetDialog = managementPage.getByTestId('reset-password-dialog')
+    await expect(resetDialog).toBeVisible()
+    await resetDialog.getByTestId('new-password').fill(RESET_PASSWORD)
+    await resetDialog.getByRole('button', { name: '确认重置' }).click()
     expect((await resetResponsePromise).status()).toBe(204)
 
     await expectRefreshRejected(
