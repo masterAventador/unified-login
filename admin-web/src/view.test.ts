@@ -142,6 +142,41 @@ describe('AdminDomView', () => {
     expect(allText(root)).toContain('退出并更换账号')
     expect(allText(root).join(' ')).not.toContain('stack')
   })
+
+  it('操作失败提示与用户列表同时渲染，管理员仍可继续操作', () => {
+    const document = new MemoryDocument()
+    const root = new MemoryElement('main')
+    const actions: AdminActions = {
+      changeQuery: vi.fn(),
+      disable: vi.fn(),
+      enable: vi.fn(),
+      resetPassword: vi.fn(),
+      logout: vi.fn(),
+    }
+
+    new AdminDomView(
+      document as unknown as Document,
+      root as unknown as HTMLElement,
+    ).showUsers({
+      content: [],
+      page: 0,
+      size: 20,
+      totalElements: 0,
+      totalPages: 0,
+    }, actions, {
+      email: '',
+      status: '',
+      page: 0,
+      size: 20,
+    }, '新密码必须为 8–64 个字符')
+
+    expect(allText(root)).toContain('新密码必须为 8–64 个字符')
+    expect(descendants(root).some(
+      (element) => element.attributes.get('data-testid') === 'operation-error',
+    )).toBe(true)
+    expect(allText(root)).toContain('退出')
+    expect(allText(root)).toContain('查询')
+  })
 })
 
 function descendants(root: MemoryElement): MemoryElement[] {

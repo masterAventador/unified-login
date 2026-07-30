@@ -45,11 +45,17 @@ export interface AdminViewPort {
   showLogin(login: () => Promise<void>): void
   showForbidden(switchAccount: () => Promise<void>): void
   showError(message: string): void
-  showUsers(page: UserPage, actions: AdminActions, query: UserQuery): void
+  showUsers(
+    page: UserPage,
+    actions: AdminActions,
+    query: UserQuery,
+    operationError?: string,
+  ): void
 }
 
 export class AdminApplication {
   private query = INITIAL_QUERY
+  private currentPage: UserPage | null = null
   private credentialsInvalidated = false
 
   constructor(
@@ -79,6 +85,7 @@ export class AdminApplication {
         await this.loadUsers()
         return
       }
+      this.currentPage = page
       this.view.showUsers(page, this.actions(), this.query)
     } catch (error) {
       this.handleError(error)
@@ -92,14 +99,22 @@ export class AdminApplication {
         await this.loadUsers()
       },
       disable: async (userId) => {
-        await this.mutate((token) => this.api.disable(token, userId))
+        await this.mutate(
+          (token) => this.api.disable(token, userId),
+          '不能禁用当前登录的管理员账号',
+        )
       },
       enable: async (userId) => {
-        await this.mutate((token) => this.api.enable(token, userId))
+        await this.mutate(
+          (token) => this.api.enable(token, userId),
+          '无法启用该账号，请检查账号状态后重试',
+        )
       },
       resetPassword: async (userId, newPassword) => {
-        await this.mutate((token) =>
-          this.api.resetPassword(token, userId, newPassword))
+        await this.mutate(
+          (token) => this.api.resetPassword(token, userId, newPassword),
+          '新密码必须为 8–64 个字符',
+        )
       },
       logout: () => {
         this.auth.logout()
@@ -108,12 +123,26 @@ export class AdminApplication {
     }
   }
 
-  private async mutate(operation: (accessToken: string) => Promise<void>): Promise<void> {
+  private async mutate(
+    operation: (accessToken: string) => Promise<void>,
+    expectedErrorMessage: string,
+  ): Promise<void> {
     this.view.showLoading()
     try {
       await operation(await this.auth.getAccessToken())
       await this.loadUsers()
     } catch (error) {
+      if (error instanceof AdminApiError
+        && (error.status === 400 || error.status === 409)
+        && this.currentPage !== null) {
+        this.view.showUsers(
+          this.currentPage,
+          this.actions(),
+          this.query,
+          expectedErrorMessage,
+        )
+        return
+      }
       this.handleError(error)
     }
   }

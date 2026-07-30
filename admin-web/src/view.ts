@@ -50,10 +50,21 @@ export class AdminDomView {
     this.root.replaceChildren(panel)
   }
 
-  showUsers(page: UserPage, actions: AdminActions, query: UserQuery): void {
+  showUsers(
+    page: UserPage,
+    actions: AdminActions,
+    query: UserQuery,
+    operationError?: string,
+  ): void {
     const shell = this.element('div', 'admin-shell')
+    shell.append(this.header(actions))
+    if (operationError !== undefined) {
+      const alert = this.text(operationError, 'operation-error')
+      alert.setAttribute('role', 'alert')
+      alert.setAttribute('data-testid', 'operation-error')
+      shell.append(alert)
+    }
     shell.append(
-      this.header(actions),
       this.filters(page, actions, query),
       this.userTable(page, actions),
       this.pagination(page, actions),

@@ -36,6 +36,7 @@ import org.springframework.security.oauth2.server.authorization.settings.Authori
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.AnonymousAuthenticationFilter;
 import org.springframework.security.web.authentication.LoginUrlAuthenticationEntryPoint;
+import org.springframework.security.web.context.SecurityContextHolderFilter;
 import org.springframework.security.web.header.writers.DelegatingRequestMatcherHeaderWriter;
 import org.springframework.security.web.header.writers.frameoptions.XFrameOptionsHeaderWriter;
 import org.springframework.security.web.servlet.util.matcher.PathPatternRequestMatcher;
@@ -117,6 +118,12 @@ public class AuthorizationServerConfig {
                 // 必需：/userinfo 端点自身不解析 Bearer token，靠资源服务器过滤器
                 // 先完成认证。缺这一句该端点对任何合法 token 都返回拒绝
                 .oauth2ResourceServer((resourceServer) -> resourceServer.jwt(Customizer.withDefaults()))
+                // SAS 7.1 只校验 prompt=login 的语法，不会重新质询已有会话。
+                // 管理后台切换账号依赖这里真正清除旧主体并在表单登录后放行一次原请求。
+                .addFilterAfter(
+                        new PromptLoginAuthenticationFilter(
+                                authorizationServerSettings.getAuthorizationEndpoint()),
+                        SecurityContextHolderFilter.class)
                 .addFilterBefore(new StalePasswordSessionFilter(userRepository),
                         AnonymousAuthenticationFilter.class);
 

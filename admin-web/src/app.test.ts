@@ -123,6 +123,75 @@ describe('AdminApplication', () => {
     )
   })
 
+  it.each([
+    {
+      action: 'disable' as const,
+      status: 409,
+      message: '不能禁用当前登录的管理员账号',
+    },
+    {
+      action: 'resetPassword' as const,
+      status: 400,
+      message: '新密码必须为 8–64 个字符',
+    },
+  ])('可预期的 $status 操作失败保留用户列表与恢复入口', async ({
+    action,
+    status,
+    message,
+  }) => {
+    const ports = testPorts()
+    const page: UserPage = {
+      ...EMPTY_PAGE,
+      content: [{
+        id: 'user-id',
+        email: 'admin@example.com',
+        status: 'ACTIVE',
+        emailVerified: true,
+        platformAdmin: true,
+        passwordChangedAt: '2026-07-31T00:00:00Z',
+        createdAt: '2026-07-31T00:00:00Z',
+        updatedAt: '2026-07-31T00:00:00Z',
+      }],
+      totalElements: 1,
+      totalPages: 1,
+    }
+    vi.mocked(ports.api.listUsers).mockResolvedValue(page)
+    vi.mocked(ports.api[action]).mockRejectedValue(new AdminApiError(status))
+    const application = new AdminApplication(ports.auth, ports.api, ports.view)
+    await application.start()
+    const actions = vi.mocked(ports.view.showUsers).mock.calls[0]?.[1]
+
+    if (action === 'disable') {
+      await actions?.disable('user-id')
+    } else {
+      await actions?.resetPassword('user-id', 'short')
+    }
+
+    expect(ports.view.showError).not.toHaveBeenCalled()
+    expect(ports.view.showUsers).toHaveBeenLastCalledWith(
+      page,
+      expect.any(Object),
+      INITIAL_QUERY_FOR_TEST,
+      message,
+    )
+  })
+
+  it('非预期的管理操作失败仍进入统一错误态', async () => {
+    const ports = testPorts()
+    const application = new AdminApplication(ports.auth, ports.api, ports.view)
+    await application.start()
+    const rendersBeforeMutation = vi.mocked(ports.view.showUsers).mock.calls.length
+    const actions = vi.mocked(ports.view.showUsers).mock.calls[0]?.[1]
+    vi.mocked(ports.api.enable).mockRejectedValue(new AdminApiError(500))
+
+    await actions?.enable('user-id')
+
+    expect(ports.view.showError).toHaveBeenCalledWith(
+      '暂时无法加载管理后台，请稍后重试',
+    )
+    expect(ports.view.showUsers).toHaveBeenCalledTimes(rendersBeforeMutation)
+  })
+
   it('refresh 凭据被 SDK 撤销后直接显示重新登录入口', async () => {
     const ports = testPorts()
     let authStateListener: ((authenticated: boolean) => void) | undefined
@@ -194,3 +263,10 @@ describe('AdminApplication', () => {
     )
   })
 })
+
+const INITIAL_QUERY_FOR_TEST = {
+  email: '',
+  status: '' as const,
+  page: 0,
+  size: 20,
+}

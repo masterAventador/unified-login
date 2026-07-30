@@ -221,6 +221,15 @@ th {
   line-height: 1.6;
 }
 
+.operation-error {
+  margin: 0;
+  padding: 12px 16px;
+  border: 1px solid #f1b8ac;
+  border-radius: 12px;
+  color: #8a2b1f;
+  background: #fff5f2;
+}
+
 @media (max-width: 720px) {
   .admin-shell {
     width: min(100% - 20px, 1180px);
