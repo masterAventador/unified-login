@@ -1,0 +1,13 @@
+[package]
+name = "unified-login-tauri"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+description = "统一登录 Tauri 桌面端认证套件"
+
+[dependencies]
+thiserror = "2.0"
+tiny_http = "0.12"
+url = "2.5"
+
