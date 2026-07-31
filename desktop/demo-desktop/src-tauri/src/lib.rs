@@ -135,10 +135,11 @@ async fn login(app: AppHandle, state: State<'_, AppState>) -> Result<&'static st
         .session
         .accept_tokens(tokens)
         .map_err(|_| CommandError::credentials())?;
-    app.get_webview_window("main")
-        .ok_or_else(CommandError::login_failed)?
-        .set_focus()
-        .map_err(|_| CommandError::login_failed())?;
+    // 令牌已经成功保存后，窗口聚焦只能算尽力而为；不能因为窗口此刻正在关闭、
+    // 被系统拒绝抢焦点等纯 UI 原因，把一次成功登录错误地报告成失败。
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.set_focus();
+    }
     Ok("authenticated")
 }
 

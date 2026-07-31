@@ -28,9 +28,6 @@
   },
   "bundle": {
     "active": true,
-    "targets": [
-      "app"
-    ],
     "category": "Utility",
     "shortDescription": "通过系统浏览器安全登录"
   }
