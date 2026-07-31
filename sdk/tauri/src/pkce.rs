@@ -2,10 +2,20 @@ use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use sha2::{Digest, Sha256};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct PkcePair {
     pub verifier: String,
     pub challenge: String,
+}
+
+impl std::fmt::Debug for PkcePair {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PkcePair")
+            .field("verifier", &"[REDACTED]")
+            .field("challenge", &self.challenge)
+            .finish()
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -59,6 +69,20 @@ mod tests {
         assert_ne!(first.verifier, second.verifier);
         assert_ne!(first.verifier, state);
         assert_eq!(first.challenge, challenge_for(&first.verifier));
+    }
+
+    #[test]
+    fn pkce_debug_output_redacts_the_verifier() {
+        let pair = super::PkcePair {
+            verifier: "verifier-super-secret".to_owned(),
+            challenge: "public-challenge".to_owned(),
+        };
+
+        let debug = format!("{pair:?}");
+
+        assert!(!debug.contains("verifier-super-secret"));
+        assert!(debug.contains("public-challenge"));
+        assert!(debug.contains("[REDACTED]"));
     }
 
     fn assert_base64url_32_bytes(value: &str) {

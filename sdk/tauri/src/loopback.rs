@@ -15,9 +15,18 @@ const ERROR_PAGE: &str = r#"<!doctype html>
 <body><main><h1>登录请求无效</h1><p>请关闭此页并在桌面应用中重新登录。</p></main></body>
 </html>"#;
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(PartialEq, Eq)]
 pub struct AuthorizationCallback {
     pub code: String,
+}
+
+impl std::fmt::Debug for AuthorizationCallback {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AuthorizationCallback")
+            .field("code", &"[REDACTED]")
+            .finish()
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -173,6 +182,18 @@ mod tests {
             TcpStream::connect_timeout(&address, Duration::from_millis(200)).is_err(),
             "处理一次回调后监听端口必须立即关闭"
         );
+    }
+
+    #[test]
+    fn authorization_callback_debug_output_redacts_the_one_time_code() {
+        let callback = AuthorizationCallback {
+            code: "one-time-super-secret".to_owned(),
+        };
+
+        let debug = format!("{callback:?}");
+
+        assert!(!debug.contains("one-time-super-secret"));
+        assert!(debug.contains("[REDACTED]"));
     }
 
     fn send_get(address: SocketAddr, target: &str) -> String {

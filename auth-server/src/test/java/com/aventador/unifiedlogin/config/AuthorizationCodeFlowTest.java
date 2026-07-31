@@ -66,6 +66,8 @@ class AuthorizationCodeFlowTest {
 
     private static final String OTHER_PUBLIC_CLIENT = "test-other-public";
 
+    private static final String DESKTOP_CLIENT = "demo-desktop";
+
     /** 与 demo-web-a 一致的公有客户端设置，保证测试客户端走的是同一条产品路径。 */
     private static final ClientSettings PUBLIC_CLIENT_SETTINGS = ClientSettings.builder()
             .requireProofKey(true)
@@ -115,6 +117,27 @@ class AuthorizationCodeFlowTest {
                 .andExpect(jsonPath("$.refresh_token").exists())
                 .andExpect(jsonPath("$.id_token").exists())
                 .andExpect(jsonPath("$.token_type").value("Bearer"));
+    }
+
+    @Test
+    void desktopLoopbackRedirectAcceptsEphemeralPortButKeepsRegisteredHostAndPath() throws Exception {
+        String runtimeRedirectUri = "http://127.0.0.1:49152/callback";
+        String code = authorizeAndExtractCode(mockMvc, session, DESKTOP_CLIENT, runtimeRedirectUri);
+
+        String tokenResponse = exchangeCode(
+                mockMvc,
+                code,
+                DESKTOP_CLIENT,
+                runtimeRedirectUri);
+
+        assertThat(jsonField(tokenResponse, "access_token")).isNotBlank();
+        assertThat(jsonField(tokenResponse, "refresh_token")).isNotBlank();
+
+        Map<String, String> wrongPath = validAuthorizeParams(
+                DESKTOP_CLIENT,
+                "http://127.0.0.1:49152/attacker");
+        mockMvc.perform(get(authorizeUri(wrongPath)).session(session))
+                .andExpect(status().isBadRequest());
     }
 
     /**

@@ -1,0 +1,23 @@
+[package]
+name = "demo-desktop"
+version = "0.1.0"
+description = "统一登录桌面端示例"
+authors = ["Unified Login Contributors"]
+edition = "2024"
+rust-version = "1.88"
+
+[lib]
+name = "demo_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "=2.6.3", features = [] }
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+tauri = { version = "=2.11.5", features = [] }
+tauri-plugin-opener = "=2.5.4"
+unified-login-tauri = { path = "../../../sdk/tauri" }
+
+[lints.rust]
+unsafe_code = "forbid"

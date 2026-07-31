@@ -50,6 +50,16 @@ class ClientSyncRunnerTest {
     }
 
     @Test
+    void desktopClientRegistersPortlessLoopbackRedirectForEphemeralPorts() {
+        RegisteredClient client = registeredClientRepository.findByClientId("demo-desktop");
+
+        assertThat(client).isNotNull();
+        assertThat(client.getRedirectUris()).containsExactly("http://127.0.0.1/callback");
+        assertThat(client.getClientAuthenticationMethods()).containsExactly(ClientAuthenticationMethod.NONE);
+        assertThat(client.getClientSettings().isRequireProofKey()).isTrue();
+    }
+
+    @Test
     void clientIsPublicAndRequiresPkce() {
         RegisteredClient client = registeredClientRepository.findByClientId("demo-web-a");
 

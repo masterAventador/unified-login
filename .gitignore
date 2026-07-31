@@ -6,6 +6,8 @@ target/
 node_modules/
 dist/
 *.tsbuildinfo
+# Tauri 构建时按本机目标生成的权限 JSON Schema，不属于产品源码
+desktop/*/src-tauri/gen/schemas/
 # Playwright 每次运行产生的失败现场与报告，不入库
 test-results/
 playwright-report/

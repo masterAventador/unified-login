@@ -2,12 +2,24 @@ use reqwest::StatusCode;
 use serde::Deserialize;
 use url::Url;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct TokenResponse {
     pub access_token: String,
     pub refresh_token: String,
     pub id_token: Option<String>,
     pub expires_in: u64,
+}
+
+impl std::fmt::Debug for TokenResponse {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("TokenResponse")
+            .field("access_token", &"[REDACTED]")
+            .field("refresh_token", &"[REDACTED]")
+            .field("id_token", &self.id_token.as_ref().map(|_| "[REDACTED]"))
+            .field("expires_in", &self.expires_in)
+            .finish()
+    }
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -283,6 +295,23 @@ mod tests {
             matches!(unavailable_result, Err(TokenError::Network(_))),
             "无法连接应归类为可重试网络错误，实际为 {unavailable_result:?}"
         );
+    }
+
+    #[test]
+    fn token_response_debug_output_never_exposes_tokens() {
+        let response = super::TokenResponse {
+            access_token: "access-super-secret".to_owned(),
+            refresh_token: "refresh-super-secret".to_owned(),
+            id_token: Some("id-super-secret".to_owned()),
+            expires_in: 900,
+        };
+
+        let debug = format!("{response:?}");
+
+        assert!(!debug.contains("access-super-secret"));
+        assert!(!debug.contains("refresh-super-secret"));
+        assert!(!debug.contains("id-super-secret"));
+        assert!(debug.contains("[REDACTED]"));
     }
 
     #[derive(Debug)]

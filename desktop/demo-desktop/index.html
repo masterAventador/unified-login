@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="统一登录桌面端示例，只通过系统浏览器完成安全登录。"
+    />
+    <title>统一登录桌面端</title>
+  </head>
+  <body>
+    <main class="shell" aria-labelledby="page-title">
+      <section class="brand" aria-label="应用介绍">
+        <p class="brand__mark" aria-hidden="true">UL</p>
+        <div>
+          <p class="eyebrow">UNIFIED LOGIN</p>
+          <h1 id="page-title">桌面端安全登录</h1>
+          <p class="brand__copy">
+            登录始终在系统默认浏览器中完成。应用不会要求你在内嵌窗口里输入密码。
+          </p>
+        </div>
+      </section>
+
+      <section class="status-card" aria-live="polite" aria-atomic="true">
+        <span id="status-indicator" class="status-indicator" aria-hidden="true"></span>
+        <p id="status-label" class="eyebrow">正在启动</p>
+        <h2 id="status-title" data-testid="status-title">正在恢复登录状态…</h2>
+        <p id="status-message" class="status-message">
+          正在安全地检查系统凭据库。
+        </p>
+        <div class="actions">
+          <button id="login-button" class="button button--primary" type="button" hidden>
+            使用系统浏览器登录
+          </button>
+          <button id="retry-button" class="button button--primary" type="button" hidden>
+            重试
+          </button>
+          <button id="logout-button" class="button button--secondary" type="button" hidden>
+            退出登录
+          </button>
+        </div>
+      </section>
+
+      <p class="privacy-note">
+        Refresh Token 仅保存在操作系统凭据库；Access Token 仅保留在当前进程内存。
+      </p>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

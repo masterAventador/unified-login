@@ -73,7 +73,7 @@ public class TokenEndpointCorsConfig {
         return registration;
     }
 
-    private static List<String> registeredClientOrigins(UnifiedLoginProperties properties) {
+    static List<String> registeredClientOrigins(UnifiedLoginProperties properties) {
         return registeredClientOrigins(properties, null);
     }
 
@@ -87,15 +87,27 @@ public class TokenEndpointCorsConfig {
                 .filter(Objects::nonNull)
                 .flatMap(List::stream)
                 .map(TokenEndpointCorsConfig::originOf)
+                .filter(Objects::nonNull)
                 .distinct()
                 .toList();
     }
 
-    /** 取回调地址的源（协议 + 主机 + 端口），丢掉路径——CORS 比对的粒度是源而不是完整地址。 */
+    /**
+     * 取浏览器回调地址的源（协议 + 主机 + 端口），丢掉路径。
+     *
+     * <p>原生客户端的自定义 scheme 与无 host 地址不受浏览器同源策略约束，也不是合法的
+     * CORS Origin。把它们灌进 allowedOrigins 会在启动期或首次请求时触发配置异常。
+     */
     private static String originOf(String redirectUri) {
         UriComponents uri = UriComponentsBuilder.fromUriString(redirectUri).build();
+        String scheme = uri.getScheme();
+        if (scheme == null
+                || (!"http".equalsIgnoreCase(scheme) && !"https".equalsIgnoreCase(scheme))
+                || !org.springframework.util.StringUtils.hasText(uri.getHost())) {
+            return null;
+        }
         return UriComponentsBuilder.newInstance()
-                .scheme(uri.getScheme())
+                .scheme(scheme.toLowerCase(java.util.Locale.ROOT))
                 .host(uri.getHost())
                 .port(uri.getPort())
                 .build()
