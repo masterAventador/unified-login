@@ -14,25 +14,27 @@ const demoApiFrontendDirectory = fileURLToPath(
 const e2eDirectory = fileURLToPath(new URL('./', import.meta.url))
 const mavenWrapper = process.platform === 'win32' ? 'mvnw.cmd' : './mvnw'
 
+export const authServerWebServer = {
+  name: '认证中心',
+  command: `${mavenWrapper} -DskipTests clean package && java -jar target/auth-server.jar`,
+  cwd: authServerDirectory,
+  env: {
+    DB_URL: 'jdbc:postgresql://127.0.0.1:55432/unified_login',
+    DB_USERNAME: 'unified_login',
+    DB_PASSWORD: 'unified_login',
+    SERVER_ADDRESS: '127.0.0.1',
+  },
+  url: 'http://127.0.0.1:9000/.well-known/openid-configuration',
+  timeout: 120_000,
+  reuseExistingServer: false,
+  gracefulShutdown: { signal: 'SIGTERM' as const, timeout: 10_000 },
+}
+
 export default defineConfig({
   testDir: './tests',
   timeout: 60_000,
   webServer: [
-    {
-      name: '认证中心',
-      command: `${mavenWrapper} -DskipTests clean package && java -jar target/auth-server.jar`,
-      cwd: authServerDirectory,
-      env: {
-        DB_URL: 'jdbc:postgresql://127.0.0.1:55432/unified_login',
-        DB_USERNAME: 'unified_login',
-        DB_PASSWORD: 'unified_login',
-        SERVER_ADDRESS: '127.0.0.1',
-      },
-      url: 'http://127.0.0.1:9000/.well-known/openid-configuration',
-      timeout: 120_000,
-      reuseExistingServer: false,
-      gracefulShutdown: { signal: 'SIGTERM', timeout: 10_000 },
-    },
+    authServerWebServer,
     {
       name: 'Demo Web A',
       command: 'pnpm build && pnpm preview',
