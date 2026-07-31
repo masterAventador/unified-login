@@ -256,6 +256,27 @@ describe('SilentRenewClient.silentRenew', () => {
     expect(storage.length).toBe(0)
   })
 
+  it('临时凭据清理失败时取消仍会拒绝请求并移除 iframe', async () => {
+    const harness = installBrowserHarness()
+    const storage = new MemoryStorage()
+    const requestStore = new StateIndexedAuthorizationRequestStore(
+      `${CONFIG.clientId}.silent`,
+      storage,
+    )
+    const client = new SilentRenewClient(CONFIG, requestStore)
+    const renewPromise = client.silentRenew()
+    void renewPromise.catch(() => undefined)
+    await waitForIframe(harness)
+    vi.spyOn(storage, 'removeItem').mockImplementation(() => {
+      throw new DOMException('storage unavailable', 'SecurityError')
+    })
+
+    expect(() => client.cancel()).not.toThrow()
+
+    await expect(renewPromise).rejects.toThrow('静默续签已取消')
+    expect(harness.iframe.remove).toHaveBeenCalledOnce()
+  })
+
   it('超时后拒绝、移除 iframe 并清理临时凭据', async () => {
     const harness = installBrowserHarness()
     const storage = new MemoryStorage()

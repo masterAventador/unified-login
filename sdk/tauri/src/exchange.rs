@@ -1,6 +1,11 @@
+use crate::issuer::{issuer_uses_loopback, validated_issuer};
 use reqwest::StatusCode;
 use serde::Deserialize;
+use std::time::Duration;
 use url::Url;
+
+const TOKEN_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+const TOKEN_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct TokenResponse {
@@ -40,32 +45,37 @@ pub struct TokenClient {
 
 impl TokenClient {
     pub fn new(issuer: &str, client_id: &str) -> Result<Self, TokenError> {
-        let mut issuer = Url::parse(issuer)
-            .map_err(|error| TokenError::Protocol(format!("issuer URL 无效: {error}")))?;
-        if !matches!(issuer.scheme(), "http" | "https")
-            || issuer.host_str().is_none()
-            || !issuer.username().is_empty()
-            || issuer.password().is_some()
-            || issuer.fragment().is_some()
-        {
-            return Err(TokenError::Protocol(
-                "issuer URL 必须是 HTTP(S) 绝对地址".to_owned(),
-            ));
-        }
-        if !issuer.path().ends_with('/') {
-            issuer.set_path(&format!("{}/", issuer.path()));
-        }
+        Self::new_with_request_timeout(issuer, client_id, TOKEN_REQUEST_TIMEOUT)
+    }
+
+    fn new_with_request_timeout(
+        issuer: &str,
+        client_id: &str,
+        request_timeout: Duration,
+    ) -> Result<Self, TokenError> {
+        let issuer = validated_issuer(issuer).map_err(TokenError::Protocol)?;
+        let bypass_proxy = issuer_uses_loopback(&issuer);
         let endpoint = issuer
             .join("oauth2/token")
             .map_err(|error| TokenError::Protocol(format!("令牌端点 URL 无效: {error}")))?;
         if client_id.is_empty() {
             return Err(TokenError::Protocol("client_id 不能为空".to_owned()));
         }
+        let mut http = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(request_timeout)
+            .connect_timeout(request_timeout.min(TOKEN_CONNECT_TIMEOUT));
+        if bypass_proxy {
+            http = http.no_proxy();
+        }
+        let http = http
+            .build()
+            .map_err(|error| TokenError::Network(format!("HTTP 客户端初始化失败: {error}")))?;
 
         Ok(Self {
             endpoint,
             client_id: client_id.to_owned(),
-            http: reqwest::Client::new(),
+            http,
         })
     }
 
@@ -167,9 +177,7 @@ fn classify_oauth_error(status: StatusCode, body: &str, request_kind: RequestKin
     let oauth_error = serde_json::from_str::<OAuthErrorPayload>(body)
         .map(|payload| payload.error)
         .unwrap_or_else(|_| format!("HTTP {}", status.as_u16()));
-    if matches!(request_kind, RequestKind::Refresh)
-        && matches!(oauth_error.as_str(), "invalid_grant" | "invalid_client")
-    {
+    if matches!(request_kind, RequestKind::Refresh) && oauth_error == "invalid_grant" {
         return TokenError::ReauthenticationRequired;
     }
     TokenError::Protocol(format!("OAuth 错误: {oauth_error}"))
@@ -178,11 +186,14 @@ fn classify_oauth_error(status: StatusCode, body: &str, request_kind: RequestKin
 #[cfg(test)]
 mod tests {
     use super::{TokenClient, TokenError};
+    use crate::issuer::issuer_uses_loopback;
     use std::collections::HashMap;
     use std::net::TcpListener;
     use std::sync::mpsc::{self, Receiver};
     use std::thread;
+    use std::time::{Duration, Instant};
     use tiny_http::{Header, Response, Server, StatusCode};
+    use url::Url;
 
     #[tokio::test]
     async fn exchanges_code_with_pkce_form_and_without_authorization_header() {
@@ -238,6 +249,120 @@ mod tests {
                 ),
             ])
         );
+    }
+
+    #[tokio::test]
+    async fn token_endpoint_redirect_never_forwards_authorization_secrets() {
+        let (issuer, redirected_request_seen) = redirecting_token_endpoint();
+        let client = TokenClient::new(&issuer, "demo-desktop").expect("客户端配置应合法");
+
+        let result = client
+            .exchange_code(
+                "one-time-code",
+                "pkce-verifier",
+                "http://127.0.0.1:49152/callback",
+            )
+            .await;
+        let redirected_request_seen = redirected_request_seen
+            .recv_timeout(Duration::from_secs(1))
+            .expect("重定向目标应报告是否收到请求");
+
+        assert!(
+            matches!(result, Err(TokenError::Protocol(_))),
+            "令牌端点重定向必须被拒绝，实际为 {result:?}",
+        );
+        assert!(
+            !redirected_request_seen,
+            "authorization code 与 PKCE verifier 绝不能被转发到重定向目标",
+        );
+    }
+
+    #[test]
+    fn token_client_rejects_plain_http_for_non_loopback_issuers() {
+        for issuer in ["http://auth.example.com", "http://192.0.2.10:9000"] {
+            assert!(
+                matches!(
+                    TokenClient::new(issuer, "demo-desktop"),
+                    Err(TokenError::Protocol(_))
+                ),
+                "非回环 HTTP issuer 必须被拒绝: {issuer}",
+            );
+        }
+
+        TokenClient::new("https://auth.example.com", "demo-desktop")
+            .expect("生产 HTTPS issuer 应被接受");
+        TokenClient::new("http://[::1]:9000", "demo-desktop")
+            .expect("本地回环 HTTP issuer 应被接受");
+    }
+
+    #[tokio::test]
+    async fn stalled_token_endpoint_is_bounded_by_request_timeout() {
+        let issuer = stalling_token_endpoint(Duration::from_millis(500));
+        let client = TokenClient::new_with_request_timeout(
+            &issuer,
+            "demo-desktop",
+            Duration::from_millis(50),
+        )
+        .expect("测试客户端配置应合法");
+        let started = Instant::now();
+
+        let result = client.refresh("still-valid-token").await;
+
+        assert!(
+            matches!(result, Err(TokenError::Network(_))),
+            "令牌端点超时应归类为网络错误，实际为 {result:?}",
+        );
+        assert!(
+            started.elapsed() < Duration::from_millis(250),
+            "令牌请求必须在配置的总超时内结束",
+        );
+    }
+
+    #[tokio::test]
+    async fn localhost_issuer_reaches_an_ipv4_loopback_token_endpoint() {
+        let (ipv4_issuer, captured) = fake_token_endpoint(
+            200,
+            r#"{
+                "access_token":"access-localhost",
+                "refresh_token":"refresh-localhost",
+                "expires_in":900,
+                "token_type":"Bearer"
+            }"#,
+        );
+        let issuer = ipv4_issuer.replace("127.0.0.1", "localhost");
+        let client = TokenClient::new(&issuer, "demo-desktop").expect("客户端配置应合法");
+
+        let tokens = client
+            .exchange_code(
+                "one-time-code",
+                "pkce-verifier",
+                "http://127.0.0.1:49152/callback",
+            )
+            .await
+            .expect("localhost 应能连接仅监听 IPv4 回环的令牌端点");
+
+        assert_eq!(tokens.refresh_token, "refresh-localhost");
+        assert_eq!(
+            captured.recv().expect("应捕获令牌请求").path,
+            "/oauth2/token",
+        );
+    }
+
+    #[test]
+    fn localhost_and_both_ip_families_are_classified_as_loopback_issuers() {
+        for issuer in [
+            "http://localhost:9000",
+            "http://127.0.0.1:9000",
+            "http://[::1]:9000",
+        ] {
+            assert!(
+                issuer_uses_loopback(&Url::parse(issuer).expect("issuer 应合法")),
+                "{issuer} 应绕过系统代理",
+            );
+        }
+        assert!(!issuer_uses_loopback(
+            &Url::parse("https://auth.example.com").expect("issuer 应合法"),
+        ));
     }
 
     #[tokio::test]
@@ -370,5 +495,67 @@ mod tests {
         });
 
         (format!("http://{address}/"), receiver)
+    }
+
+    fn stalling_token_endpoint(delay: Duration) -> String {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("假令牌端点应能绑定");
+        let address = listener.local_addr().expect("假令牌端点应有地址");
+        let server = Server::from_listener(listener, None).expect("假令牌端点应能启动");
+
+        thread::spawn(move || {
+            let _request = server.recv().expect("应收到一条令牌请求");
+            thread::sleep(delay);
+        });
+
+        format!("http://{address}/")
+    }
+
+    fn redirecting_token_endpoint() -> (String, Receiver<bool>) {
+        let redirect_target_listener =
+            TcpListener::bind(("127.0.0.1", 0)).expect("重定向目标应能绑定");
+        let redirect_target_address = redirect_target_listener
+            .local_addr()
+            .expect("重定向目标应有地址");
+        let redirect_target =
+            Server::from_listener(redirect_target_listener, None).expect("重定向目标应能启动");
+        let (sender, receiver) = mpsc::channel();
+        thread::spawn(move || {
+            let request = redirect_target
+                .recv_timeout(Duration::from_millis(500))
+                .expect("重定向目标监听不应失败");
+            let Some(request) = request else {
+                sender.send(false).expect("重定向探测结果应可发送");
+                return;
+            };
+            sender.send(true).expect("重定向探测结果应可发送");
+            let content_type = Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
+                .expect("静态响应头应合法");
+            request
+                .respond(
+                    Response::from_string(
+                        r#"{"access_token":"stolen","refresh_token":"stolen","expires_in":900}"#,
+                    )
+                    .with_status_code(StatusCode(200))
+                    .with_header(content_type),
+                )
+                .expect("重定向目标响应应可返回");
+        });
+
+        let issuer_listener = TcpListener::bind(("127.0.0.1", 0)).expect("假 issuer 应能绑定");
+        let issuer_address = issuer_listener.local_addr().expect("假 issuer 应有地址");
+        let issuer = Server::from_listener(issuer_listener, None).expect("假 issuer 应能启动");
+        thread::spawn(move || {
+            let request = issuer.recv().expect("假 issuer 应收到令牌请求");
+            let location = Header::from_bytes(
+                &b"Location"[..],
+                format!("http://{redirect_target_address}/collect").as_bytes(),
+            )
+            .expect("重定向地址应合法");
+            request
+                .respond(Response::empty(StatusCode(307)).with_header(location))
+                .expect("重定向响应应可返回");
+        });
+
+        (format!("http://{issuer_address}/"), receiver)
     }
 }

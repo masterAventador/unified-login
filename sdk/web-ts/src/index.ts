@@ -169,7 +169,7 @@ export default class WebAuthClient {
     location.assign(authorizationUrl.toString())
   }
 
-  logout(): void {
+  async logout(): Promise<void> {
     this.authGeneration += 1
     try {
       this.#advanceSharedAuthGeneration()
@@ -182,11 +182,19 @@ export default class WebAuthClient {
       // 标记写入失败不能阻断当前页面清除令牌；共享代次仍可使其他实例失效。
     }
     this.silentRenewEnabled = false
-    this.silentRenewClient.cancel()
+    try {
+      this.silentRenewClient.cancel()
+    } catch {
+      // iframe 或浏览器存储清理失败不能阻断本地令牌失效。
+    }
     this.authorizationCallbackInFlight = null
     this.refreshInFlight = null
     this.silentRenewInFlight = null
-    this.authorizationRequestStore.clear()
+    try {
+      this.authorizationRequestStore.clear()
+    } catch {
+      // sessionStorage 被拒绝时仍继续清理其他状态。
+    }
     this.tokenStore.clear()
     this.#setAuthenticated(false)
   }

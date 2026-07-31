@@ -56,7 +56,7 @@ sdk/tauri/                      可复用的桌面端套件（若决定抽包）
 
 > ⚠ 回环地址是**本机任何程序都能往里发请求的**。必须校验 `state`（Task 3），不校验等于谁都能塞一个授权码进来。
 
-- [ ] TDD：先写"服务能起来并在随机端口接收一次回调后关闭"的测试
+- [x] TDD：先写"服务能起来并在随机端口接收一次回调后关闭"的测试
 
 ---
 
@@ -69,7 +69,7 @@ sdk/tauri/                      可复用的桌面端套件（若决定抽包）
 - 换令牌与刷新走 `POST /oauth2/token`，**不附加 `Authorization` 头**（HANDOVER 坑 ⑫）
 - 刷新失败（refresh token 过期或被撤销）要能区分于网络错误，前者引导重新登录，后者可重试
 
-- [ ] TDD
+- [x] TDD
 
 ---
 
@@ -81,7 +81,7 @@ sdk/tauri/                      可复用的桌面端套件（若决定抽包）
 - 登录发起时生成 `state`，回调时校验一致
 - 不一致 → **丢弃该 code，不换取令牌**，提示重新登录（规格书 §10）
 
-- [ ] **必须做变异测试**：去掉 `state` 校验后，伪造回调的用例必须变红。这是本阶段最重要的一条安全断言
+- [x] **必须做变异测试**：去掉 `state` 校验后，伪造回调的用例必须变红。这是本阶段最重要的一条安全断言
 
 ---
 
@@ -96,7 +96,7 @@ sdk/tauri/                      可复用的桌面端套件（若决定抽包）
 
 > 跨平台差异较大，若某平台暂不支持，**明确报告 BLOCKED 并说明**，不要用明文文件兜底——那会让 refresh token 以明文躺在磁盘上 30 天。
 
-- [ ] TDD
+- [x] TDD
 
 ---
 
@@ -113,7 +113,7 @@ sdk/tauri/                      可复用的桌面端套件（若决定抽包）
 6. refresh token 进凭据库，access token 只在内存
 7. **下次启动从凭据库取回 refresh token 直接换 access token，30 天内无需重新登录**
 
-- [ ] 先把客户端注册加进 `application.yml`（注意本文档开头的 CORS 前瞻约束）
+- [x] 先把客户端注册加进 `application.yml`（注意本文档开头的 CORS 前瞻约束）
 
 ---
 
@@ -140,3 +140,39 @@ sdk/tauri/                      可复用的桌面端套件（若决定抽包）
 4. `state` 校验有变异验证过的测试守护
 5. refresh token 确认在系统凭据库中，**磁盘上没有明文令牌**
 6. 服务与进程全部清理
+7. Windows 真机验收清单全部通过；在此之前仅可声明 macOS 验收完成，不得声明阶段五跨平台交付完成
+
+---
+
+## Task 7：Windows 实机复验待办
+
+> 状态：**待用户在 Windows 实机执行**。macOS 的最终 `.app` 静默验收不能替代
+> Windows Credential Manager、默认浏览器与安装包的真实验证；此项不要求在 macOS
+> 上用模拟层绕过。
+>
+> 可直接执行的 PowerShell 命令、逐项证据和回填模板见
+> [`docs/WINDOWS-TAURI-ACCEPTANCE.md`](../../WINDOWS-TAURI-ACCEPTANCE.md)。
+
+- [ ] 在 Windows 10/11、MSVC Rust 工具链和系统 WebView2 环境中执行：
+  `pnpm install --frozen-lockfile`、`pnpm test`、`pnpm typecheck`、
+  `pnpm test:acceptance:unit`、`pnpm tauri build --bundles msi`
+- [ ] 按 `docs/local-development.md` 启动映射到 `127.0.0.1:55432` 的项目专用
+  PostgreSQL，并用当前分支的 `mvnw.cmd` 在 `127.0.0.1:9000` 启动认证中心
+- [ ] 安装本轮生成的 `.msi`，确认启动的是 release 安装产物，不是 `tauri dev`
+- [ ] 从开始菜单启动时不弹出命令行窗口；应用内不显示登录页或密码输入框
+- [ ] 点登录后由 **Windows 系统默认浏览器**打开授权页，应用内没有密码输入框或内嵌登录页
+- [ ] 全新状态下输入账号密码后，应用显示已登录；浏览器回调页显示“登录成功，可关闭此页”
+- [ ] 默认浏览器已有认证中心会话时，再从桌面端登录无需重新输入密码
+- [ ] 首次登录后退出应用并重新打开，仍能从 Windows Credential Manager 中的
+  refresh token 恢复登录；应用配置目录、日志和普通文件中不得出现明文 token
+- [ ] 再退出并重开一次，确认轮换后的 refresh token 仍可继续恢复
+- [ ] 应用内登出后确认对应凭据条目消失，再次重启显示需要登录
+- [ ] 临时删除或拒绝读取凭据后启动应用，应优雅回到需要登录，不得崩溃
+- [ ] 确认回环回调使用 `127.0.0.1` 随机端口，Windows 防火墙没有要求开放公网入站；
+  若出现授权提示，拒绝后不得无限等待或静默卡死
+- [ ] 回填 Windows 版本、默认浏览器、WebView2 版本、`.msi` 构建结果及上述场景的
+  通过/失败；证据中不得包含授权码、token 或凭据内容。任一项失败均保持阶段五未完成并
+  上报 `BLOCKED`
+
+Windows 实机复验当前不要运行 `pnpm test:acceptance:headless`：该命令使用
+AppKit、WKWebView 与 macOS 动态库注入，只用于 macOS 最终产物静默验收。

@@ -37,6 +37,8 @@ pub enum LoopbackError {
     Server(String),
     #[error("等待认证回调超时")]
     Timeout,
+    #[error("认证回调已取消")]
+    Cancelled,
     #[error("认证回调请求无效")]
     InvalidRequest,
     #[error("认证回调 state 校验失败")]
@@ -74,11 +76,35 @@ impl LoopbackServer {
         expected_state: &str,
         timeout: Duration,
     ) -> Result<AuthorizationCallback, LoopbackError> {
-        let request = self
-            .server
-            .recv_timeout(timeout)
-            .map_err(LoopbackError::Respond)?
-            .ok_or(LoopbackError::Timeout)?;
+        self.wait_for_callback_until(expected_state, timeout, || false)
+    }
+
+    pub(crate) fn wait_for_callback_until(
+        self,
+        expected_state: &str,
+        timeout: Duration,
+        is_cancelled: impl Fn() -> bool,
+    ) -> Result<AuthorizationCallback, LoopbackError> {
+        let started_at = std::time::Instant::now();
+        let request = loop {
+            if is_cancelled() {
+                return Err(LoopbackError::Cancelled);
+            }
+            let Some(remaining) = timeout.checked_sub(started_at.elapsed()) else {
+                return Err(LoopbackError::Timeout);
+            };
+            if remaining.is_zero() {
+                return Err(LoopbackError::Timeout);
+            }
+            match self
+                .server
+                .recv_timeout(remaining.min(Duration::from_millis(25)))
+                .map_err(LoopbackError::Respond)?
+            {
+                Some(request) => break request,
+                None => continue,
+            }
+        };
 
         if request.method() != &Method::Get {
             respond(request, StatusCode(400), ERROR_PAGE)?;
@@ -109,12 +135,25 @@ impl LoopbackServer {
         let code = parameters
             .get("code")
             .filter(|value| !value.is_empty())
-            .map(ToString::to_string)
-            .ok_or(LoopbackError::InvalidRequest)?;
+            .map(ToString::to_string);
+        let Some(code) = code else {
+            respond(request, StatusCode(400), ERROR_PAGE)?;
+            return Err(LoopbackError::InvalidRequest);
+        };
 
-        respond(request, StatusCode(200), SUCCESS_PAGE)?;
-        Ok(AuthorizationCallback { code })
+        let response = respond(request, StatusCode(200), SUCCESS_PAGE);
+        Ok(finish_valid_callback(code, response))
     }
+}
+
+fn finish_valid_callback(
+    code: String,
+    response: Result<(), LoopbackError>,
+) -> AuthorizationCallback {
+    // 浏览器可能在回跳后立刻关闭页面。提示页是否成功写完不改变已经完成的
+    // method、path、state 与授权码校验，也不能阻断后续令牌交换。
+    let _response_was_delivered = response.is_ok();
+    AuthorizationCallback { code }
 }
 
 fn respond(
@@ -135,7 +174,7 @@ fn respond(
 
 #[cfg(test)]
 mod tests {
-    use super::{AuthorizationCallback, LoopbackServer};
+    use super::{AuthorizationCallback, LoopbackError, LoopbackServer};
     use std::io::{Read, Write};
     use std::net::{IpAddr, SocketAddr, TcpStream};
     use std::thread;
@@ -194,6 +233,42 @@ mod tests {
 
         assert!(!debug.contains("one-time-super-secret"));
         assert!(debug.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn valid_callback_survives_success_page_write_failure() {
+        let callback = super::finish_valid_callback(
+            "one-time-code".to_owned(),
+            Err(LoopbackError::Respond(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "浏览器已经关闭回调页",
+            ))),
+        );
+
+        assert_eq!(
+            callback,
+            AuthorizationCallback {
+                code: "one-time-code".to_owned(),
+            }
+        );
+    }
+
+    #[test]
+    fn callback_without_authorization_code_returns_the_error_page() {
+        let server = LoopbackServer::bind().expect("回环服务应能启动");
+        let address = server.local_addr();
+        let callback = thread::spawn(move || {
+            server.wait_for_callback("expected-state", Duration::from_secs(2))
+        });
+
+        let response = send_get(address, "/callback?state=expected-state");
+
+        assert!(response.starts_with("HTTP/1.1 400"));
+        assert!(response.contains("登录请求无效"));
+        assert!(matches!(
+            callback.join().expect("回调线程不应 panic"),
+            Err(LoopbackError::InvalidRequest),
+        ));
     }
 
     fn send_get(address: SocketAddr, target: &str) -> String {

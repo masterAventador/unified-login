@@ -160,7 +160,11 @@ export class SilentRenewClient {
         }
         window.removeEventListener('message', handleMessage)
         iframe.remove()
-        this.requestStore.clearIfState(state)
+        try {
+          this.requestStore.clearIfState(state)
+        } catch {
+          // 浏览器存储不可用不能让 iframe 请求永远停在未完成状态。
+        }
         if (this.generation === requestGeneration) {
           this.cancelActiveRequest = null
         }

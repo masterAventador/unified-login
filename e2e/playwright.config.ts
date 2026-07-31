@@ -23,6 +23,9 @@ export const authServerWebServer = {
     DB_USERNAME: 'unified_login',
     DB_PASSWORD: 'unified_login',
     SERVER_ADDRESS: '127.0.0.1',
+    // 整套并行 E2E 都从同一个回环地址登录，不能让用例彼此消耗生产默认的每 IP 额度。
+    // 生产配置仍保持 20；这里只有受管测试进程显式提高阈值。
+    UNIFIED_LOGIN_LOGIN_RATE_LIMIT_MAX_ATTEMPTS_PER_IP_PER_MINUTE: '1000',
   },
   url: 'http://127.0.0.1:9000/.well-known/openid-configuration',
   timeout: 120_000,

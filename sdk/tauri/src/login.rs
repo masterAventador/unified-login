@@ -1,8 +1,9 @@
 use crate::exchange::{TokenClient, TokenError, TokenResponse};
+use crate::issuer::validated_issuer;
 use crate::loopback::{LoopbackError, LoopbackServer};
 use crate::pkce::{PkcePair, RandomError, generate_pkce, generate_state};
 use std::time::Duration;
-use url::Url;
+use tokio::sync::watch;
 
 #[derive(Debug, thiserror::Error)]
 pub enum LoginError {
@@ -26,32 +27,66 @@ pub struct LoginAttempt {
     redirect_uri: String,
 }
 
+#[derive(Clone)]
+pub struct LoginCancellation {
+    cancelled: watch::Sender<bool>,
+}
+
+impl LoginCancellation {
+    pub fn new() -> Self {
+        let (cancelled, _) = watch::channel(false);
+        Self { cancelled }
+    }
+
+    pub fn cancel(&self) {
+        self.cancelled.send_replace(true);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        *self.cancelled.borrow()
+    }
+
+    async fn cancelled(&self) {
+        let mut cancelled = self.cancelled.subscribe();
+        while !*cancelled.borrow_and_update() {
+            if cancelled.changed().await.is_err() {
+                return;
+            }
+        }
+    }
+}
+
+impl Default for LoginCancellation {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LoginAttempt {
     pub fn start(issuer: &str, client_id: &str) -> Result<Self, LoginError> {
+        Self::start_with_prompt(issuer, client_id, None)
+    }
+
+    pub fn start_with_prompt(
+        issuer: &str,
+        client_id: &str,
+        prompt: Option<&str>,
+    ) -> Result<Self, LoginError> {
+        if !matches!(prompt, None | Some("login")) {
+            return Err(LoginError::Configuration(
+                "prompt 只允许使用 login".to_owned(),
+            ));
+        }
         let loopback = LoopbackServer::bind()?;
         let redirect_uri = loopback.redirect_uri();
         let pkce = generate_pkce()?;
         let state = generate_state()?;
-        let mut issuer = Url::parse(issuer)
-            .map_err(|error| LoginError::Configuration(format!("issuer URL 无效: {error}")))?;
-        if !matches!(issuer.scheme(), "http" | "https")
-            || issuer.host_str().is_none()
-            || !issuer.username().is_empty()
-            || issuer.password().is_some()
-            || issuer.fragment().is_some()
-        {
-            return Err(LoginError::Configuration(
-                "issuer URL 必须是 HTTP(S) 绝对地址".to_owned(),
-            ));
-        }
-        if !issuer.path().ends_with('/') {
-            issuer.set_path(&format!("{}/", issuer.path()));
-        }
+        let issuer = validated_issuer(issuer).map_err(LoginError::Configuration)?;
         let mut authorization_url = issuer
             .join("oauth2/authorize")
             .map_err(|error| LoginError::Configuration(format!("授权端点 URL 无效: {error}")))?;
-        authorization_url
-            .query_pairs_mut()
+        let mut query = authorization_url.query_pairs_mut();
+        query
             .append_pair("response_type", "code")
             .append_pair("client_id", client_id)
             .append_pair("redirect_uri", &redirect_uri)
@@ -59,6 +94,10 @@ impl LoginAttempt {
             .append_pair("code_challenge", &pkce.challenge)
             .append_pair("code_challenge_method", "S256")
             .append_pair("state", &state);
+        if let Some(prompt) = prompt {
+            query.append_pair("prompt", prompt);
+        }
+        drop(query);
 
         Ok(Self {
             loopback,
@@ -82,6 +121,16 @@ impl LoginAttempt {
         token_client: &TokenClient,
         timeout: Duration,
     ) -> Result<TokenResponse, LoginError> {
+        self.complete_with_cancellation(token_client, timeout, LoginCancellation::new())
+            .await
+    }
+
+    pub async fn complete_with_cancellation(
+        self,
+        token_client: &TokenClient,
+        timeout: Duration,
+        cancellation: LoginCancellation,
+    ) -> Result<TokenResponse, LoginError> {
         let Self {
             loopback,
             pkce,
@@ -89,21 +138,27 @@ impl LoginAttempt {
             redirect_uri,
             ..
         } = self;
-        let callback =
-            tokio::task::spawn_blocking(move || loopback.wait_for_callback(&state, timeout))
-                .await
-                .map_err(|error| LoginError::CallbackTask(error.to_string()))??;
+        let callback_cancellation = cancellation.clone();
+        let callback = tokio::task::spawn_blocking(move || {
+            loopback
+                .wait_for_callback_until(&state, timeout, || callback_cancellation.is_cancelled())
+        })
+        .await
+        .map_err(|error| LoginError::CallbackTask(error.to_string()))??;
 
-        token_client
-            .exchange_code(&callback.code, &pkce.verifier, &redirect_uri)
-            .await
-            .map_err(LoginError::from)
+        tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => Err(LoginError::Loopback(LoopbackError::Cancelled)),
+            result = token_client.exchange_code(&callback.code, &pkce.verifier, &redirect_uri) => {
+                result.map_err(LoginError::from)
+            }
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{LoginAttempt, LoginError};
+    use super::{LoginAttempt, LoginCancellation, LoginError};
     use crate::exchange::TokenClient;
     use crate::loopback::LoopbackError;
     use std::io::{Read, Write};
@@ -156,6 +211,39 @@ mod tests {
         );
     }
 
+    #[test]
+    fn explicit_login_prompt_is_included_in_the_authorization_url() {
+        let attempt =
+            LoginAttempt::start_with_prompt("http://localhost:9000", "demo-desktop", Some("login"))
+                .expect("强制登录尝试应能创建");
+        let authorization_url = Url::parse(attempt.authorization_url()).expect("授权地址应合法");
+
+        assert_eq!(
+            authorization_url
+                .query_pairs()
+                .find_map(|(name, value)| (name == "prompt").then(|| value.into_owned())),
+            Some("login".to_owned())
+        );
+    }
+
+    #[test]
+    fn plain_http_issuer_is_allowed_only_for_loopback_development() {
+        for issuer in ["http://auth.example.com", "http://192.0.2.10:9000"] {
+            assert!(
+                matches!(
+                    LoginAttempt::start(issuer, "demo-desktop"),
+                    Err(LoginError::Configuration(_))
+                ),
+                "非回环 HTTP issuer 必须被拒绝: {issuer}",
+            );
+        }
+
+        LoginAttempt::start("https://auth.example.com", "demo-desktop")
+            .expect("生产 HTTPS issuer 应被接受");
+        LoginAttempt::start("http://127.0.0.1:9000", "demo-desktop")
+            .expect("本地回环 HTTP issuer 应被接受");
+    }
+
     #[tokio::test]
     async fn forged_state_is_rejected_before_any_token_request() {
         let (issuer, token_request_seen) = fake_token_endpoint();
@@ -189,6 +277,39 @@ mod tests {
                 .recv_timeout(Duration::from_secs(1))
                 .expect("假令牌端点应报告是否收到请求"),
             "state 不匹配时授权码必须被丢弃，绝不能请求令牌端点"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancellation_stops_the_loopback_listener_without_waiting_for_timeout() {
+        let token_client =
+            TokenClient::new("http://127.0.0.1:9", "demo-desktop").expect("令牌客户端应能创建");
+        let attempt =
+            LoginAttempt::start("http://localhost:9000", "demo-desktop").expect("登录尝试应能创建");
+        let callback_address = callback_address(attempt.redirect_uri());
+        let cancellation = LoginCancellation::new();
+        let cancellation_for_task = cancellation.clone();
+        let completion = tokio::spawn(async move {
+            attempt
+                .complete_with_cancellation(
+                    &token_client,
+                    Duration::from_millis(250),
+                    cancellation_for_task,
+                )
+                .await
+        });
+
+        thread::sleep(Duration::from_millis(20));
+        cancellation.cancel();
+        let result = completion.await.expect("取消任务不应 panic");
+
+        assert!(matches!(
+            result,
+            Err(LoginError::Loopback(LoopbackError::Cancelled))
+        ));
+        assert!(
+            TcpStream::connect_timeout(&callback_address, Duration::from_millis(200)).is_err(),
+            "取消后必须立即关闭临时回环监听端口"
         );
     }
 
