@@ -52,7 +52,7 @@ test('桌面应用通过独立 SDK 包接入而不引用仓库内部源码路径
 test('桌面开发、检查和生产构建都先编译本地 SDK 包产物', () => {
   assert.equal(
     packageManifest.scripts['build:sdk'],
-    'tsc -p ../../sdk/tauri/tsconfig.build.json',
+    'tsc -p ../../sdk/tauri/tsconfig.build.json && node ../../sdk/tauri/scripts/normalize-source-map.mjs',
     'SDK 必须复用桌面端冻结安装的 TypeScript，不能在构建阶段触发第二次依赖安装',
   )
   for (const script of ['dev', 'build', 'typecheck']) {

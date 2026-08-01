@@ -19,7 +19,7 @@
   ],
   "sideEffects": false,
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "tsc -p tsconfig.build.json && node scripts/normalize-source-map.mjs",
     "test": "pnpm run build && vitest run --dir ts && node --test tests/consumer-contract.node-test.mjs",
     "test:consumer": "pnpm run build && tsc --noEmit -p tests/consumer-app/tsconfig.json && cargo check --locked --manifest-path tests/consumer-app/Cargo.toml",
     "typecheck": "tsc --noEmit",

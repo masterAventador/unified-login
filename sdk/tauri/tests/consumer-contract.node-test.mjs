@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import { test } from 'node:test'
+import { normalizeSourceMap } from '../scripts/normalize-source-map.mjs'
 
 const manifest = JSON.parse(await readFile(
   new URL('../package.json', import.meta.url),
@@ -37,6 +38,14 @@ test('发布的 source map 内联源码且无需包外文件即可解析', () =>
   assert.equal(sourceMap.sources.length, 1)
   assert.equal(sourceMap.sourcesContent.length, sourceMap.sources.length)
   assert.match(sourceMap.sourcesContent[0], /export class TauriAuthClient/)
+  assert.doesNotMatch(sourceMap.sourcesContent[0], /\r/)
+})
+
+test('已有 Windows 工作区的 CRLF 源码也会在构建时归一化', () => {
+  const normalized = normalizeSourceMap({
+    sourcesContent: ['first\r\nsecond\rthird\n'],
+  })
+  assert.deepEqual(normalized.sourcesContent, ['first\nsecond\nthird\n'])
 })
 
 test('第二个应用只配置插件、创建客户端和声明权限', () => {

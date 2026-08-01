@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build:sdk": "tsc -p ../../sdk/tauri/tsconfig.build.json",
+    "build:sdk": "tsc -p ../../sdk/tauri/tsconfig.build.json && node ../../sdk/tauri/scripts/normalize-source-map.mjs",
     "build": "pnpm run build:sdk && tsc -b && vite build",
     "dev": "pnpm run build:sdk && vite",
     "test": "vitest run",
