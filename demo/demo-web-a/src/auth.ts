@@ -1,4 +1,8 @@
-const ISSUER = 'http://localhost:9000'
+const CONFIGURED_ISSUER = import.meta.env.VITE_UNIFIED_LOGIN_ISSUER
+  ?? 'http://localhost:9000'
+const ISSUER = CONFIGURED_ISSUER.endsWith('/')
+  ? CONFIGURED_ISSUER
+  : `${CONFIGURED_ISSUER}/`
 const CLIENT_ID = 'demo-web-a'
 const REDIRECT_URI = 'http://localhost:5173/callback'
 const VERIFIER_KEY = 'demo-web-a.code_verifier'
@@ -42,7 +46,9 @@ export async function startLogin(): Promise<void> {
     code_challenge_method: 'S256',
   })
 
-  window.location.assign(`${ISSUER}/oauth2/authorize?${params.toString()}`)
+  const authorizationUrl = new URL('oauth2/authorize', ISSUER)
+  authorizationUrl.search = params.toString()
+  window.location.assign(authorizationUrl.toString())
 }
 
 export async function completeLogin(search: string): Promise<void> {
@@ -70,7 +76,7 @@ export async function completeLogin(search: string): Promise<void> {
     code_verifier: verifier,
   })
 
-  const response = await fetch(`${ISSUER}/oauth2/token`, {
+  const response = await fetch(new URL('oauth2/token', ISSUER), {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body,

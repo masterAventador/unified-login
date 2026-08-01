@@ -7,9 +7,11 @@ const PORTABLE_TESTS = [
   'tests/acceptance-environment.node-test.mjs',
   'tests/acceptance-http.node-test.mjs',
   'tests/acceptance-java.node-test.mjs',
+  'tests/acceptance-oauth.node-test.mjs',
   'tests/acceptance-workspace.node-test.mjs',
   'tests/macos-external-driver-compilation.node-test.mjs',
   'tests/production-artifact-path.node-test.mjs',
+  'tests/sdk-delegation.node-test.mjs',
 ]
 const MACOS_TESTS = [
   'tests/acceptance-processes.node-test.mjs',

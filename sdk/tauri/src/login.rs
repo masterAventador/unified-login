@@ -72,11 +72,21 @@ impl LoginAttempt {
         client_id: &str,
         prompt: Option<&str>,
     ) -> Result<Self, LoginError> {
+        Self::start_with_options(issuer, client_id, &["openid".to_owned()], prompt)
+    }
+
+    pub fn start_with_options(
+        issuer: &str,
+        client_id: &str,
+        scopes: &[String],
+        prompt: Option<&str>,
+    ) -> Result<Self, LoginError> {
         if !matches!(prompt, None | Some("login")) {
             return Err(LoginError::Configuration(
                 "prompt 只允许使用 login".to_owned(),
             ));
         }
+        let scopes = validated_scopes(scopes).map_err(LoginError::Configuration)?;
         let loopback = LoopbackServer::bind()?;
         let redirect_uri = loopback.redirect_uri();
         let pkce = generate_pkce()?;
@@ -90,7 +100,7 @@ impl LoginAttempt {
             .append_pair("response_type", "code")
             .append_pair("client_id", client_id)
             .append_pair("redirect_uri", &redirect_uri)
-            .append_pair("scope", "openid")
+            .append_pair("scope", &scopes)
             .append_pair("code_challenge", &pkce.challenge)
             .append_pair("code_challenge_method", "S256")
             .append_pair("state", &state);
@@ -154,6 +164,25 @@ impl LoginAttempt {
             }
         }
     }
+}
+
+pub(crate) fn validated_scopes(scopes: &[String]) -> Result<String, String> {
+    if scopes.is_empty() {
+        return Err("scope 不能为空".to_owned());
+    }
+    if scopes.iter().any(|scope| {
+        scope.is_empty()
+            || !scope.is_ascii()
+            || !scope.bytes().all(|byte| {
+                byte == 0x21 || (0x23..=0x5b).contains(&byte) || (0x5d..=0x7e).contains(&byte)
+            })
+    }) {
+        return Err("每个 scope 必须符合 OAuth scope-token 语法".to_owned());
+    }
+    if !scopes.iter().any(|scope| scope == "openid") {
+        return Err("OIDC 登录 scope 必须包含 openid".to_owned());
+    }
+    Ok(scopes.join(" "))
 }
 
 #[cfg(test)]
@@ -225,6 +254,29 @@ mod tests {
                 .query_pairs()
                 .find_map(|(name, value)| (name == "prompt").then(|| value.into_owned())),
             Some("login".to_owned())
+        );
+    }
+
+    #[test]
+    fn configured_scopes_are_included_in_the_authorization_url() {
+        let attempt = LoginAttempt::start_with_options(
+            "http://localhost:9000",
+            "demo-desktop",
+            &[
+                "openid".to_owned(),
+                "profile".to_owned(),
+                "email".to_owned(),
+            ],
+            None,
+        )
+        .expect("自定义 scope 的登录尝试应能创建");
+        let authorization_url = Url::parse(attempt.authorization_url()).expect("授权地址应合法");
+
+        assert_eq!(
+            authorization_url
+                .query_pairs()
+                .find_map(|(name, value)| (name == "scope").then(|| value.into_owned())),
+            Some("openid profile email".to_owned())
         );
     }
 

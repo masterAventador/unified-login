@@ -56,6 +56,10 @@ unified-login:
         - ${ADMIN_WEB_REDIRECT_URI:http://localhost:5175/callback}
     - client-id: demo-desktop
       client-name: Demo Desktop
+      scopes:
+        - openid
+        - profile
+        - email
       # Spring Security 7.1 按 OAuth 2.1 的回环地址规则，允许请求时替换为任意临时端口，
       # 但仍会精确校验协议、回环 IP 与路径；因此配置里刻意不固定端口。
       redirect-uris:

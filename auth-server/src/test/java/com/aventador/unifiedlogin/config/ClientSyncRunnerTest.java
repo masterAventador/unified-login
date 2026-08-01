@@ -57,6 +57,7 @@ class ClientSyncRunnerTest {
         assertThat(client.getRedirectUris()).containsExactly("http://127.0.0.1/callback");
         assertThat(client.getClientAuthenticationMethods()).containsExactly(ClientAuthenticationMethod.NONE);
         assertThat(client.getClientSettings().isRequireProofKey()).isTrue();
+        assertThat(client.getScopes()).containsExactlyInAnyOrder("openid", "profile", "email");
     }
 
     @Test

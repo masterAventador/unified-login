@@ -42,6 +42,8 @@ test('进程外探针可操作隐藏 WKWebView 且拒绝错误令牌', async () 
           '-framework',
           'Foundation',
           '-framework',
+          'Security',
+          '-framework',
           'WebKit',
           '-o',
           library,

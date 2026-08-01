@@ -11,7 +11,12 @@ export async function withTemporaryDirectory(prefix, action) {
   }
 }
 
-export async function prepareWorkspace(run, directory, name) {
+export async function prepareWorkspace(
+  run,
+  directory,
+  name,
+  buildEnvironment = undefined,
+) {
   await run(
     'pnpm',
     ['install', '--frozen-lockfile'],
@@ -23,5 +28,6 @@ export async function prepareWorkspace(run, directory, name) {
     ['build'],
     `${name} 生产构建失败`,
     directory,
+    ...(buildEnvironment === undefined ? [] : [buildEnvironment]),
   )
 }

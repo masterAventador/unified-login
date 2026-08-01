@@ -1,20 +1,15 @@
-use serde::Serialize;
 use std::sync::{Arc, Mutex as StdMutex};
-use std::time::Duration;
 use tauri::{AppHandle, Manager, State};
+use unified_login_tauri::auth::{AuthClient, AuthConfig, AuthError, AuthErrorCode, LoginOptions};
 use unified_login_tauri::credentials::{
-    CredentialError, SystemCredentialStore, scoped_credential_account,
+    CredentialError, MigratingCredentialStore, SystemCredentialStore,
 };
-use unified_login_tauri::exchange::TokenClient;
-use unified_login_tauri::login::{LoginAttempt, LoginCancellation};
-use unified_login_tauri::session::{AccessTokenStatus, SessionManager};
 
 const CLIENT_ID: &str = "demo-desktop";
 const CREDENTIAL_SERVICE: &str = "com.aventador.unified-login.demo-desktop";
 const CREDENTIAL_ACCOUNT: &str = "refresh-token";
 const CREDENTIAL_SERVICE_ENV: &str = "UNIFIED_LOGIN_CREDENTIAL_SERVICE";
 const DEFAULT_ISSUER: &str = "http://localhost:9000";
-const CALLBACK_TIMEOUT: Duration = Duration::from_secs(120);
 const WINDOW_STARTUP_MODE_ENV: &str = "UNIFIED_LOGIN_WINDOW_STARTUP_MODE";
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -101,7 +96,6 @@ fn credential_service(value: Option<&str>) -> &str {
 struct AppState {
     auth: StdMutex<AppAuthState>,
     auth_configuration: AuthConfiguration,
-    login_lifecycle: StdMutex<LoginLifecycle>,
 }
 
 type CredentialStoreFactory =
@@ -113,50 +107,14 @@ struct AuthConfiguration {
     store_factory: Arc<CredentialStoreFactory>,
 }
 
-#[derive(Default)]
-struct LoginLifecycle {
-    active_login: Option<Arc<ActiveLogin>>,
-    logout_in_progress: bool,
-}
-
-struct ActiveLogin {
-    cancellation: LoginCancellation,
-    finished: tokio::sync::watch::Sender<bool>,
-}
-
-impl ActiveLogin {
-    fn new() -> Self {
-        let (finished, _) = tokio::sync::watch::channel(false);
-        Self {
-            cancellation: LoginCancellation::new(),
-            finished,
-        }
-    }
-
-    fn finish(&self) {
-        self.finished.send_replace(true);
-    }
-
-    async fn wait_for_finish(&self) {
-        let mut finished = self.finished.subscribe();
-        while !*finished.borrow_and_update() {
-            if finished.changed().await.is_err() {
-                return;
-            }
-        }
-    }
-}
-
 enum AppAuthState {
-    Ready(Arc<AuthResources>),
-    Unavailable(CommandError),
+    Ready(Arc<DesktopAuthClient>),
+    Unavailable(AuthError),
 }
 
-struct AuthResources {
-    issuer: String,
-    login_token_client: TokenClient,
-    session: SessionManager<SystemCredentialStore>,
-}
+type CompatibleCredentialStore =
+    MigratingCredentialStore<SystemCredentialStore, SystemCredentialStore>;
+type DesktopAuthClient = AuthClient<CompatibleCredentialStore>;
 
 impl AppState {
     fn new() -> Self {
@@ -186,7 +144,6 @@ impl AppState {
                 credential_service: credential_service.to_owned(),
                 store_factory,
             },
-            login_lifecycle: StdMutex::new(LoginLifecycle::default()),
         }
     }
 
@@ -194,28 +151,27 @@ impl AppState {
         issuer: &str,
         credential_service: &str,
         store_factory: &CredentialStoreFactory,
-    ) -> Result<AuthResources, CommandError> {
-        let login_token_client =
-            TokenClient::new(issuer, CLIENT_ID).map_err(|_| CommandError::configuration())?;
-        let session_token_client =
-            TokenClient::new(issuer, CLIENT_ID).map_err(|_| CommandError::configuration())?;
-        let credential_account = scoped_credential_account(CREDENTIAL_ACCOUNT, issuer, CLIENT_ID)
-            .map_err(|_| CommandError::configuration())?;
-        let store = store_factory(credential_service, &credential_account)
-            .map_err(|_| CommandError::credentials())?;
-
-        Ok(AuthResources {
-            issuer: issuer.to_owned(),
-            login_token_client,
-            session: SessionManager::new(session_token_client, store),
-        })
+    ) -> Result<DesktopAuthClient, AuthError> {
+        let config = AuthConfig::builder(issuer, CLIENT_ID, credential_service)
+            .credential_account(CREDENTIAL_ACCOUNT)
+            .build()?;
+        let current_store = store_factory(credential_service, config.credential_account())
+            .map_err(AuthError::from)?;
+        let legacy_account = config.legacy_credential_account().ok_or(AuthError {
+            code: AuthErrorCode::Configuration,
+            message: "桌面端认证配置无效",
+        })?;
+        let legacy_store =
+            store_factory(credential_service, legacy_account).map_err(AuthError::from)?;
+        let store = MigratingCredentialStore::new(current_store, legacy_store);
+        AuthClient::new(config, store)
     }
 
-    fn auth_resources(&self) -> Result<Arc<AuthResources>, CommandError> {
+    fn auth_client(&self) -> Result<Arc<DesktopAuthClient>, AuthError> {
         let mut auth = self.auth.lock().expect("认证资源锁不应中毒");
         if matches!(
             &*auth,
-            AppAuthState::Unavailable(error) if *error == CommandError::credentials()
+            AppAuthState::Unavailable(error) if error.code == AuthErrorCode::Credentials
         ) {
             *auth = Self::initialize_auth(
                 &self.auth_configuration.issuer,
@@ -231,181 +187,11 @@ impl AppState {
             AppAuthState::Unavailable(error) => Err(*error),
         }
     }
-
-    fn begin_login(&self) -> Result<LoginGuard<'_>, CommandError> {
-        let mut lifecycle = self.login_lifecycle.lock().expect("登录生命周期锁不应中毒");
-        if lifecycle.logout_in_progress || lifecycle.active_login.is_some() {
-            return Err(CommandError::login_in_progress());
-        }
-        let active_login = Arc::new(ActiveLogin::new());
-        lifecycle.active_login = Some(Arc::clone(&active_login));
-        Ok(LoginGuard {
-            lifecycle: &self.login_lifecycle,
-            active_login,
-        })
-    }
-
-    fn begin_logout(&self) -> Result<LogoutGuard<'_>, CommandError> {
-        let mut lifecycle = self.login_lifecycle.lock().expect("登录生命周期锁不应中毒");
-        if lifecycle.logout_in_progress {
-            return Err(CommandError::logout_failed());
-        }
-        lifecycle.logout_in_progress = true;
-        let active_login = lifecycle.active_login.clone();
-        if let Some(active_login) = &active_login {
-            active_login.cancellation.cancel();
-        }
-        Ok(LogoutGuard {
-            lifecycle: &self.login_lifecycle,
-            active_login,
-        })
-    }
-}
-
-struct LoginGuard<'a> {
-    lifecycle: &'a StdMutex<LoginLifecycle>,
-    active_login: Arc<ActiveLogin>,
-}
-
-impl LoginGuard<'_> {
-    fn cancellation(&self) -> LoginCancellation {
-        self.active_login.cancellation.clone()
-    }
-}
-
-impl Drop for LoginGuard<'_> {
-    fn drop(&mut self) {
-        let mut lifecycle = self.lifecycle.lock().expect("登录生命周期锁不应中毒");
-        if lifecycle
-            .active_login
-            .as_ref()
-            .is_some_and(|active| Arc::ptr_eq(active, &self.active_login))
-        {
-            lifecycle.active_login = None;
-        }
-        self.active_login.finish();
-    }
-}
-
-struct LogoutGuard<'a> {
-    lifecycle: &'a StdMutex<LoginLifecycle>,
-    active_login: Option<Arc<ActiveLogin>>,
-}
-
-impl LogoutGuard<'_> {
-    async fn wait_for_active_login(&self) {
-        if let Some(active_login) = &self.active_login {
-            active_login.wait_for_finish().await;
-        }
-    }
-}
-
-impl Drop for LogoutGuard<'_> {
-    fn drop(&mut self) {
-        self.lifecycle
-            .lock()
-            .expect("登录生命周期锁不应中毒")
-            .logout_in_progress = false;
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct CommandError {
-    code: &'static str,
-    message: &'static str,
-}
-
-impl CommandError {
-    fn configuration() -> Self {
-        Self {
-            code: "configuration",
-            message: "桌面端认证配置无效",
-        }
-    }
-
-    fn credentials() -> Self {
-        Self {
-            code: "credentials",
-            message: "操作系统凭据库暂时不可用",
-        }
-    }
-
-    fn login_in_progress() -> Self {
-        Self {
-            code: "loginInProgress",
-            message: "已有登录流程正在进行",
-        }
-    }
-
-    fn login_options() -> Self {
-        Self {
-            code: "loginOptions",
-            message: "桌面端登录选项无效",
-        }
-    }
-
-    fn login_failed() -> Self {
-        Self {
-            code: "loginFailed",
-            message: "登录未完成，请重试",
-        }
-    }
-
-    fn login_required() -> Self {
-        Self {
-            code: "loginRequired",
-            message: "当前没有可用的登录令牌",
-        }
-    }
-
-    fn retryable() -> Self {
-        Self {
-            code: "retryable",
-            message: "暂时无法连接认证中心",
-        }
-    }
-
-    fn restore_failed() -> Self {
-        Self {
-            code: "restoreFailed",
-            message: "暂时无法恢复登录状态",
-        }
-    }
-
-    fn logout_failed() -> Self {
-        Self {
-            code: "logoutFailed",
-            message: "退出登录未完成",
-        }
-    }
-}
-
-fn required_access_token(access_token: AccessTokenStatus) -> Result<String, CommandError> {
-    match access_token {
-        AccessTokenStatus::Available(value) => Ok(value),
-        AccessTokenStatus::LoginRequired => Err(CommandError::login_required()),
-        AccessTokenStatus::Retryable => Err(CommandError::retryable()),
-    }
-}
-
-fn force_login(prompt: Option<&str>) -> Result<bool, CommandError> {
-    match prompt {
-        None => Ok(false),
-        Some("login") => Ok(true),
-        Some(_) => Err(CommandError::login_options()),
-    }
 }
 
 #[tauri::command]
-async fn get_access_token(state: State<'_, AppState>) -> Result<String, CommandError> {
-    let access_token = state
-        .auth_resources()?
-        .session
-        .access_token()
-        .await
-        .map_err(|_| CommandError::restore_failed())?;
-    required_access_token(access_token)
+async fn get_access_token(state: State<'_, AppState>) -> Result<String, AuthError> {
+    state.auth_client()?.access_token().await
 }
 
 #[tauri::command]
@@ -413,31 +199,15 @@ async fn login(
     app: AppHandle,
     state: State<'_, AppState>,
     prompt: Option<String>,
-) -> Result<&'static str, CommandError> {
-    let resources = state.auth_resources()?;
-    let prompt = force_login(prompt.as_deref())?.then_some("login");
-    let login_guard = state.begin_login()?;
-    let login_generation = resources.session.begin_login();
-    let attempt = LoginAttempt::start_with_prompt(&resources.issuer, CLIENT_ID, prompt)
-        .map_err(|_| CommandError::login_failed())?;
-    tauri_plugin_opener::open_url(attempt.authorization_url(), None::<&str>)
-        .map_err(|_| CommandError::login_failed())?;
-    let tokens = attempt
-        .complete_with_cancellation(
-            &resources.login_token_client,
-            CALLBACK_TIMEOUT,
-            login_guard.cancellation(),
-        )
-        .await
-        .map_err(|_| CommandError::login_failed())?;
-    let accepted = resources
-        .session
-        .accept_login_tokens(login_generation, tokens)
-        .await
-        .map_err(|_| CommandError::credentials())?;
-    if !accepted {
-        return Err(CommandError::login_failed());
-    }
+) -> Result<&'static str, AuthError> {
+    let options = LoginOptions::from_prompt(prompt.as_deref())?;
+    state
+        .auth_client()?
+        .login(options, |authorization_url| {
+            tauri_plugin_opener::open_url(authorization_url, None::<&str>)
+                .map_err(|error| error.to_string())
+        })
+        .await?;
     // 令牌已经成功保存后，窗口聚焦只能算尽力而为；不能因为窗口此刻正在关闭、
     // 被系统拒绝抢焦点等纯 UI 原因，把一次成功登录错误地报告成失败。
     if current_window_startup_mode().should_focus_after_login()
@@ -449,16 +219,8 @@ async fn login(
 }
 
 #[tauri::command]
-async fn logout(state: State<'_, AppState>) -> Result<(), CommandError> {
-    let resources = state.auth_resources()?;
-    let logout_guard = state.begin_logout()?;
-    let result = resources
-        .session
-        .logout()
-        .await
-        .map_err(|_| CommandError::logout_failed());
-    logout_guard.wait_for_active_login().await;
-    result
+async fn logout(state: State<'_, AppState>) -> Result<(), AuthError> {
+    state.auth_client()?.logout().await
 }
 
 pub fn run() {
@@ -498,24 +260,8 @@ mod tests {
         ExistingInstanceTarget, WindowStartupMode, activate_existing_instance,
         configure_macos_activation, credential_service, window_startup_mode,
     };
+    use unified_login_tauri::auth::AuthErrorCode;
     use unified_login_tauri::credentials::{CredentialError, SystemCredentialStore};
-    use unified_login_tauri::session::AccessTokenStatus;
-
-    #[test]
-    fn access_token_command_rejects_a_missing_session_with_a_stable_error() {
-        assert_eq!(
-            super::required_access_token(AccessTokenStatus::LoginRequired),
-            Err(super::CommandError::login_required())
-        );
-        assert_eq!(
-            super::required_access_token(AccessTokenStatus::Retryable),
-            Err(super::CommandError::retryable())
-        );
-        assert_eq!(
-            super::required_access_token(AccessTokenStatus::Available("access-secret".to_owned())),
-            Ok("access-secret".to_owned())
-        );
-    }
 
     #[test]
     fn automation_window_mode_is_hidden_without_changing_the_default() {
@@ -573,38 +319,6 @@ mod tests {
     }
 
     #[test]
-    fn prevents_overlapping_login_attempts_and_releases_after_completion() {
-        let state = AppState::new();
-        let first = state.begin_login().expect("首次登录应占用互斥位");
-        assert!(state.begin_login().is_err(), "并发登录必须被拒绝");
-        drop(first);
-        assert!(state.begin_login().is_ok(), "流程结束后必须允许重新登录");
-    }
-
-    #[tokio::test]
-    async fn logout_cancels_and_waits_for_the_active_login_before_allowing_retry() {
-        let state = AppState::new();
-        let login = state.begin_login().expect("首次登录应占用互斥位");
-        let cancellation = login.cancellation();
-
-        let logout = state.begin_logout().expect("登出应进入受管生命周期");
-
-        assert!(cancellation.is_cancelled(), "登出必须立即取消活动登录");
-        assert!(state.begin_login().is_err(), "登出结束前不得启动新登录");
-        drop(login);
-        logout.wait_for_active_login().await;
-        assert!(
-            state.begin_login().is_err(),
-            "登出守卫释放前仍不得启动新登录"
-        );
-        drop(logout);
-        assert!(
-            state.begin_login().is_ok(),
-            "登出完整结束后必须允许立即重试"
-        );
-    }
-
-    #[test]
     fn credential_store_initialization_failure_becomes_managed_state() {
         let state = AppState::new_with_store_factory(
             DEFAULT_ISSUER.to_owned(),
@@ -617,8 +331,8 @@ mod tests {
         );
 
         assert!(matches!(
-            state.auth_resources(),
-            Err(error) if error == super::CommandError::credentials()
+            state.auth_client(),
+            Err(error) if error.code == AuthErrorCode::Credentials
         ));
     }
 
@@ -638,20 +352,10 @@ mod tests {
         );
 
         assert!(
-            state.auth_resources().is_ok(),
+            state.auth_client().is_ok(),
             "系统凭据库恢复后，同一个应用实例的重试必须重新初始化认证资源"
         );
-        assert_eq!(attempts.load(Ordering::SeqCst), 2);
-    }
-
-    #[test]
-    fn login_prompt_accepts_only_the_shared_web_sdk_contract() {
-        assert_eq!(super::force_login(None), Ok(false));
-        assert_eq!(super::force_login(Some("login")), Ok(true));
-        assert_eq!(
-            super::force_login(Some("none")),
-            Err(super::CommandError::login_options())
-        );
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
     }
 
     #[derive(Default)]

@@ -32,4 +32,5 @@ test('外置动态库明确使用最终生产应用的 Rust 目标架构', () =>
   ])
   assert.equal(browserArguments.at(-1), '/tmp/browser-driver.dylib')
   assert.equal(webviewArguments.at(-1), '/tmp/webview-driver.dylib')
+  assert.ok(webviewArguments.includes('Security'))
 })
