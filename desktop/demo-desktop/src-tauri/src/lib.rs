@@ -245,7 +245,13 @@ mod tests {
                 cmd: "plugin:unified-login-tauri|get_access_token".into(),
                 callback: CallbackFn(0),
                 error: CallbackFn(1),
-                url: "tauri://localhost".parse().expect("测试 IPC URL 应有效"),
+                url: if cfg!(any(windows, target_os = "android")) {
+                    "http://tauri.localhost"
+                } else {
+                    "tauri://localhost"
+                }
+                .parse()
+                .expect("测试 IPC URL 应有效"),
                 body: InvokeBody::default(),
                 headers: Default::default(),
                 invoke_key: INVOKE_KEY.to_owned(),
@@ -256,7 +262,7 @@ mod tests {
         assert_eq!(
             response.get("code").and_then(|value| value.as_str()),
             Some("configuration"),
-            "命令必须真实进入 SDK 插件，不能被 ACL 拒绝为 Plugin not found",
+            "命令必须真实进入 SDK 插件，不能被 ACL 拒绝为 Plugin not found；实际响应：{response}",
         );
     }
 

@@ -4,3 +4,8 @@ sdk/tauri/ts/** text eol=lf
 sdk/tauri/scripts/** text eol=lf
 sdk/tauri/dist/** text eol=lf
 sdk/tauri/permissions/** text eol=lf
+
+# Tauri CLI 构建安装包时会临时修改并还原 Cargo 清单；固定为 LF，避免 Windows
+# `core.autocrlf=true` 的工作区在内容未变化时仍被还原写入动作标记为脏。
+desktop/demo-desktop/src-tauri/Cargo.toml text eol=lf
+desktop/demo-desktop/src-tauri/windows-app-manifest.xml text eol=lf
