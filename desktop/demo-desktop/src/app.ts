@@ -1,4 +1,4 @@
-import type { TauriAuthClientApi } from '../../../sdk/tauri/ts/index'
+import type { TauriAuthClientApi } from '@unified-login/tauri'
 
 export interface AuthView {
   showBusy(message: string): void

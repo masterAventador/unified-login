@@ -1,0 +1,6 @@
+packages:
+  - .
+
+# pnpm 11 起默认不执行依赖安装脚本；Vitest 经 Vite 依赖 esbuild。
+allowBuilds:
+  esbuild: true

@@ -1,0 +1,32 @@
+{
+  "name": "@unified-login/tauri",
+  "version": "0.1.0",
+  "type": "module",
+  "publishConfig": {
+    "access": "public"
+  },
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "test": "pnpm run build && vitest run --dir ts && node --test tests/consumer-contract.node-test.mjs",
+    "test:consumer": "pnpm run build && tsc --noEmit -p tests/consumer-app/tsconfig.json && cargo check --locked --manifest-path tests/consumer-app/Cargo.toml",
+    "typecheck": "tsc --noEmit",
+    "prepack": "pnpm run build"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3",
+    "vitest": "4.0.17"
+  }
+}

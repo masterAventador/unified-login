@@ -1,0 +1,15 @@
+[package]
+name = "unified-login-tauri-consumer-fixture"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+tauri = { version = "2.11", default-features = false }
+unified-login-tauri = { path = "../.." }
+
+[lints.rust]
+unsafe_code = "forbid"

@@ -2,6 +2,8 @@
 
 Tauri 2 示例应用。授权页只会由 Rust 调起系统默认浏览器，应用 WebView 只显示本地登录状态。
 Refresh Token 保存在操作系统凭据库，Access Token 只存在于 Rust 进程内存。
+认证协议、凭据生命周期、Tauri commands 和前端并发状态均来自 `unified-login-tauri` /
+`@unified-login/tauri`；本应用只保留认证配置、单实例与窗口策略和 UI。
 运行期间会在 Access Token 到期前静默轮换；应用限制为单实例，避免多个进程同时消费同一
 Refresh Token。生产 issuer 必须使用 HTTPS，本地回环地址是唯一的 HTTP 例外。
 

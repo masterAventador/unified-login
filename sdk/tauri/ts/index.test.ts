@@ -4,8 +4,8 @@ import {
   TauriAuthError,
   TauriAuthClient,
   type TauriAuthClientApi,
-} from '../../../sdk/tauri/ts/index'
-import type WebAuthClient from '../../../sdk/web-ts/src/index'
+} from './index'
+import type WebAuthClient from '../../web-ts/src/index'
 
 type Equal<Left, Right> =
   (<Value>() => Value extends Left ? 1 : 2) extends
