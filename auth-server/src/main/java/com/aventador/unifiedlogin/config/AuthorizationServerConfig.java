@@ -1,6 +1,8 @@
 package com.aventador.unifiedlogin.config;
 
 import com.aventador.unifiedlogin.account.StalePasswordSessionFilter;
+import com.aventador.unifiedlogin.account.TokenRevocationService;
+import com.aventador.unifiedlogin.account.UsedRefreshTokenStore;
 import com.aventador.unifiedlogin.account.UserTokenLock;
 import com.aventador.unifiedlogin.security.LoginPaths;
 import com.aventador.unifiedlogin.user.AppUserRepository;
@@ -61,6 +63,8 @@ public class AuthorizationServerConfig {
             OAuth2AuthorizationService authorizationService,
             UserDetailsService userDetailsService,
             UserTokenLock userTokenLock,
+            UsedRefreshTokenStore usedRefreshTokenStore,
+            TokenRevocationService tokenRevocationService,
             AppUserRepository userRepository,
             PlatformTransactionManager transactionManager) throws Exception {
         // Spring Security 7 中该类没有 authorizationServer() 静态工厂（那是旧 1.x 的 API），
@@ -87,7 +91,8 @@ public class AuthorizationServerConfig {
                                 .authenticationProviders((authenticationProviders) -> {
                                         AccountStatusRefreshTokenAuthenticationProvider.guardRefreshTokenProvider(
                                                 authenticationProviders, authorizationService, userDetailsService,
-                                                userTokenLock, transactionManager);
+                                                userTokenLock, usedRefreshTokenStore,
+                                                tokenRevocationService, transactionManager);
                                         UserLockedAuthorizationCodeAuthenticationProvider
                                                 .guardAuthorizationCodeProvider(
                                                         authenticationProviders, authorizationService,

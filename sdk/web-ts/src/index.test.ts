@@ -1621,6 +1621,39 @@ describe('WebAuthClient 登录态订阅与登出', () => {
       '当前没有可用的登录令牌',
     )
   })
+
+  it('授权请求清理失败时登出仍清除内存令牌且不会拒绝', async () => {
+    const storage = new MemoryStorage()
+    storage.setItem('demo-web-b.state', 'expected-state')
+    storage.setItem('demo-web-b.code_verifier', 'code-verifier')
+    const authStateListener = vi.fn()
+    vi.stubGlobal('sessionStorage', storage)
+    stubLocation('http://localhost:5174/callback?code=one-time-code&state=expected-state')
+    vi.stubGlobal('history', { state: null, replaceState: vi.fn() })
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      access_token: 'access-token',
+      refresh_token: 'refresh-token',
+      id_token: 'id-token',
+      expires_in: 900,
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })))
+    const client = new WebAuthClient(CONFIG)
+    client.onAuthStateChange(authStateListener)
+    await client.getAccessToken()
+    vi.spyOn(storage, 'removeItem').mockImplementation(() => {
+      throw new DOMException('storage unavailable', 'SecurityError')
+    })
+    stubLocation('http://localhost:5174/')
+
+    await expect(client.logout()).resolves.toBeUndefined()
+
+    expect(authStateListener.mock.calls).toEqual([[true], [false]])
+    await expect(client.getAccessToken()).rejects.toThrow(
+      '当前没有可用的登录令牌',
+    )
+  })
 })
 
 describe('WebAuthClient 静默续签集成', () => {

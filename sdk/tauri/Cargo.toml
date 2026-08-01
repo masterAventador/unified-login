@@ -1,0 +1,24 @@
+[package]
+name = "unified-login-tauri"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "MIT"
+description = "统一登录 Tauri 桌面端认证套件"
+
+[dependencies]
+base64 = "0.22"
+getrandom = "0.3"
+httparse = "1.10"
+keyring = "4.1.5"
+reqwest = { version = "0.13", default-features = true, features = ["form", "json"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.10"
+thiserror = "2.0"
+tokio = { version = "1.49", features = ["macros", "rt-multi-thread", "sync"] }
+url = "2.5"
+
+[dev-dependencies]
+tiny_http = "0.12"
+tokio = { version = "1.49", features = ["macros", "rt-multi-thread"] }

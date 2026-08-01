@@ -32,11 +32,15 @@ public class UserTokenLock {
     }
 
     public boolean lockByPrincipalName(String principalName) {
-        return !jdbcTemplate.queryForList("""
-                SELECT true
+        return lockAndGetUserIdByPrincipalName(principalName).isPresent();
+    }
+
+    public Optional<UUID> lockAndGetUserIdByPrincipalName(String principalName) {
+        return jdbcTemplate.queryForList("""
+                SELECT id
                 FROM app_user
                 WHERE email = ?
                 FOR UPDATE
-                """, Boolean.class, principalName).isEmpty();
+                """, UUID.class, principalName).stream().findFirst();
     }
 }

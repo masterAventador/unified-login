@@ -106,15 +106,67 @@ class TokenRevocationConcurrencyTest {
         assertRefreshIssuesNothing(rotatedRefreshToken);
     }
 
+    @Test
+    void concurrentSecondUseStillRevokesEverySession() throws Exception {
+        IssuedTokens target = issueTokens("concurrent-replay@example.com");
+        String secondSessionRefreshToken = issueAdditionalRefreshToken("concurrent-replay@example.com");
+        authorizationService.pauseNextSave();
+
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        try {
+            Future<String> firstUse = executor.submit(
+                    () -> OAuth2TestFlows.refreshTokens(mockMvc, target.refreshToken()));
+            assertThat(authorizationService.awaitPausedSave())
+                    .as("首次刷新应停在持久化轮转结果之前")
+                    .isTrue();
+
+            Future<Integer> secondUse = executor.submit(() -> mockMvc.perform(post("/oauth2/token")
+                            .param("grant_type", "refresh_token")
+                            .param("client_id", OAuth2TestFlows.CLIENT_ID)
+                            .param("refresh_token", target.refreshToken()))
+                    .andReturn()
+                    .getResponse()
+                    .getStatus());
+
+            boolean replayFinishedBeforeFirstUseCommitted;
+            try {
+                secondUse.get(2, TimeUnit.SECONDS);
+                replayFinishedBeforeFirstUseCommitted = true;
+            }
+            catch (TimeoutException expectedWhenSerialized) {
+                replayFinishedBeforeFirstUseCommitted = false;
+            }
+            finally {
+                authorizationService.resumeSave();
+            }
+
+            String rotatedRefreshToken = OAuth2TestFlows.jsonField(
+                    firstUse.get(10, TimeUnit.SECONDS), "refresh_token");
+            assertThat(secondUse.get(10, TimeUnit.SECONDS)).isBetween(400, 499);
+            assertThat(replayFinishedBeforeFirstUseCommitted)
+                    .as("并发的第二次提交必须等待首次轮转提交，随后识别为重放")
+                    .isFalse();
+
+            assertRefreshIssuesNothing(rotatedRefreshToken);
+            assertRefreshIssuesNothing(secondSessionRefreshToken);
+        }
+        finally {
+            authorizationService.resumeSave();
+            executor.shutdownNow();
+        }
+    }
+
     private IssuedTokens issueTokens(String email) throws Exception {
         AppUser user = registrationService.register(email, PASSWORD);
+        return new IssuedTokens(user.getId(), issueAdditionalRefreshToken(email));
+    }
+
+    private String issueAdditionalRefreshToken(String email) throws Exception {
         MockHttpSession session = OAuth2TestFlows.login(mockMvc, email, PASSWORD);
         String response = OAuth2TestFlows.exchangeCode(
                 mockMvc,
                 OAuth2TestFlows.authorizeAndExtractCode(mockMvc, session));
-        return new IssuedTokens(
-                user.getId(),
-                OAuth2TestFlows.jsonField(response, "refresh_token"));
+        return OAuth2TestFlows.jsonField(response, "refresh_token");
     }
 
     private void assertRefreshIssuesNothing(String refreshToken) throws Exception {

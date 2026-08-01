@@ -1,5 +1,7 @@
 package com.aventador.unifiedlogin.config;
 
+import com.aventador.unifiedlogin.account.TokenRevocationService;
+import com.aventador.unifiedlogin.account.UsedRefreshTokenStore;
 import com.aventador.unifiedlogin.account.UserTokenLock;
 import org.springframework.security.authentication.AuthenticationProvider;
 import org.springframework.security.core.Authentication;
@@ -18,6 +20,9 @@ import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.util.List;
+import java.util.Objects;
+import java.util.Optional;
+import java.util.UUID;
 
 /**
  * 让账号状态管住 refresh token 授权。
@@ -45,15 +50,22 @@ final class AccountStatusRefreshTokenAuthenticationProvider implements Authentic
 
     private final UserTokenLock userTokenLock;
 
+    private final UsedRefreshTokenStore usedRefreshTokenStore;
+
+    private final TokenRevocationService tokenRevocationService;
+
     private final TransactionTemplate transactionTemplate;
 
     private AccountStatusRefreshTokenAuthenticationProvider(AuthenticationProvider delegate,
             OAuth2AuthorizationService authorizationService, UserDetailsService userDetailsService,
-            UserTokenLock userTokenLock, PlatformTransactionManager transactionManager) {
+            UserTokenLock userTokenLock, UsedRefreshTokenStore usedRefreshTokenStore,
+            TokenRevocationService tokenRevocationService, PlatformTransactionManager transactionManager) {
         this.delegate = delegate;
         this.authorizationService = authorizationService;
         this.userDetailsService = userDetailsService;
         this.userTokenLock = userTokenLock;
+        this.usedRefreshTokenStore = usedRefreshTokenStore;
+        this.tokenRevocationService = tokenRevocationService;
         this.transactionTemplate = new TransactionTemplate(transactionManager);
     }
 
@@ -66,13 +78,14 @@ final class AccountStatusRefreshTokenAuthenticationProvider implements Authentic
      */
     static void guardRefreshTokenProvider(List<AuthenticationProvider> providers,
             OAuth2AuthorizationService authorizationService, UserDetailsService userDetailsService,
-            UserTokenLock userTokenLock, PlatformTransactionManager transactionManager) {
+            UserTokenLock userTokenLock, UsedRefreshTokenStore usedRefreshTokenStore,
+            TokenRevocationService tokenRevocationService, PlatformTransactionManager transactionManager) {
         int guarded = 0;
         for (int i = 0; i < providers.size(); i++) {
             if (providers.get(i) instanceof OAuth2RefreshTokenAuthenticationProvider) {
                 providers.set(i, new AccountStatusRefreshTokenAuthenticationProvider(
                         providers.get(i), authorizationService, userDetailsService,
-                        userTokenLock, transactionManager));
+                        userTokenLock, usedRefreshTokenStore, tokenRevocationService, transactionManager));
                 guarded++;
             }
         }
@@ -85,27 +98,55 @@ final class AccountStatusRefreshTokenAuthenticationProvider implements Authentic
 
     @Override
     public Authentication authenticate(Authentication authentication) throws AuthenticationException {
-        return this.transactionTemplate.execute(
-                (transactionStatus) -> authenticateWithinTransaction(authentication));
+        RefreshResult result = Objects.requireNonNull(this.transactionTemplate.execute(
+                (transactionStatus) -> authenticateWithinTransaction(authentication)));
+        if (result.replayDetected()) {
+            // 必须在撤销事务提交之后再抛异常，否则 TransactionTemplate 会把 DELETE 一起回滚。
+            throw new OAuth2AuthenticationException(OAuth2ErrorCodes.INVALID_GRANT);
+        }
+        return result.authentication();
     }
 
-    private Authentication authenticateWithinTransaction(Authentication authentication) {
+    private RefreshResult authenticateWithinTransaction(Authentication authentication) {
         OAuth2RefreshTokenAuthenticationToken refreshTokenAuthentication =
                 (OAuth2RefreshTokenAuthenticationToken) authentication;
+        String refreshToken = refreshTokenAuthentication.getRefreshToken();
+
+        Optional<UUID> replayedUserId = this.usedRefreshTokenStore.findUnexpiredUserId(refreshToken);
+        if (replayedUserId.isPresent()) {
+            this.tokenRevocationService.revokeAllTokensOf(replayedUserId.get());
+            return RefreshResult.replay();
+        }
 
         OAuth2Authorization authorization = this.authorizationService
-                .findByToken(refreshTokenAuthentication.getRefreshToken(), OAuth2TokenType.REFRESH_TOKEN);
+                .findByToken(refreshToken, OAuth2TokenType.REFRESH_TOKEN);
         // 令牌本身查不到授权记录时这里无从判断账号，也不需要判断：交给被包裹的 provider
         // 按 invalid_grant 拒绝，保持「令牌无效」与「账号不可用」的响应形态一致
         if (authorization != null) {
             // 必须在回查状态和框架保存轮转结果之前取得用户行锁，并由包住整个 delegate
             // 的事务持有到 save 完成。否则并发撤销可能先 DELETE，随后被 save 重新 INSERT。
-            if (!this.userTokenLock.lockByPrincipalName(authorization.getPrincipalName())) {
+            Optional<UUID> userId = this.userTokenLock
+                    .lockAndGetUserIdByPrincipalName(authorization.getPrincipalName());
+            if (userId.isEmpty()) {
                 throw new OAuth2AuthenticationException(OAuth2ErrorCodes.INVALID_GRANT);
             }
+
+            // 两个请求可能都在取得用户锁前读到旧授权。后到者必须在锁内重查消费记录，
+            // 才能把并发的第二次提交识别为重放，而不是只让框架返回普通 invalid_grant。
+            replayedUserId = this.usedRefreshTokenStore.findUnexpiredUserId(refreshToken);
+            if (replayedUserId.isPresent()) {
+                this.tokenRevocationService.revokeAllTokensOf(replayedUserId.get());
+                return RefreshResult.replay();
+            }
             requireUsableAccount(authorization.getPrincipalName());
+
+            Authentication authenticated = this.delegate.authenticate(authentication);
+            this.usedRefreshTokenStore.record(refreshToken, userId.get(),
+                    Objects.requireNonNull(authorization.getRefreshToken().getToken().getExpiresAt(),
+                            "持久化的刷新令牌必须有过期时间"));
+            return RefreshResult.success(authenticated);
         }
-        return this.delegate.authenticate(authentication);
+        return RefreshResult.success(this.delegate.authenticate(authentication));
     }
 
     /**
@@ -130,5 +171,16 @@ final class AccountStatusRefreshTokenAuthenticationProvider implements Authentic
     @Override
     public boolean supports(Class<?> authentication) {
         return this.delegate.supports(authentication);
+    }
+
+    private record RefreshResult(Authentication authentication, boolean replayDetected) {
+
+        private static RefreshResult success(Authentication authentication) {
+            return new RefreshResult(authentication, false);
+        }
+
+        private static RefreshResult replay() {
+            return new RefreshResult(null, true);
+        }
     }
 }

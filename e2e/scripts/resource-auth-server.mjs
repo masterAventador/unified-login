@@ -4,6 +4,8 @@ import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
+import { stopChildProcess } from './process-control.mjs'
+
 const AUTH_BASE = 'http://127.0.0.1:9001'
 const MANAGER_HOST = '127.0.0.1'
 const MANAGER_PORT = 19001
@@ -118,21 +120,9 @@ async function stopAuth() {
     return
   }
 
-  const exited = new Promise((resolve) => {
-    child.once('exit', resolve)
-  })
-  child.kill('SIGTERM')
-  let timeoutId
-  const timedOut = await Promise.race([
-    exited.then(() => false),
-    new Promise((resolve) => {
-      timeoutId = setTimeout(() => resolve(true), STOP_TIMEOUT_MS)
-    }),
-  ])
-  clearTimeout(timeoutId)
-  if (timedOut) {
-    child.kill('SIGKILL')
-    await exited
+  await stopChildProcess(child, { timeoutMs: STOP_TIMEOUT_MS })
+  if (authProcess === child) {
+    authProcess = null
   }
 }
 
