@@ -1,0 +1,11 @@
+# SDK 发布产物内联 TypeScript 源码。Windows 若按全局 core.autocrlf 将源码检出为
+# CRLF，source map 会因构建主机不同而变化，因此发布链涉及的文本统一使用 LF。
+sdk/tauri/ts/** text eol=lf
+sdk/tauri/scripts/** text eol=lf
+sdk/tauri/dist/** text eol=lf
+sdk/tauri/permissions/** text eol=lf
+
+# Tauri CLI 构建安装包时会临时修改并还原 Cargo 清单；固定为 LF，避免 Windows
+# `core.autocrlf=true` 的工作区在内容未变化时仍被还原写入动作标记为脏。
+desktop/demo-desktop/src-tauri/Cargo.toml text eol=lf
+desktop/demo-desktop/src-tauri/windows-app-manifest.xml text eol=lf

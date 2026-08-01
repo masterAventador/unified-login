@@ -11,6 +11,9 @@ importers:
       '@tauri-apps/api':
         specifier: 2.11.1
         version: 2.11.1
+      '@unified-login/tauri':
+        specifier: file:../../sdk/tauri
+        version: file:../../sdk/tauri
     devDependencies:
       '@playwright/test':
         specifier: 1.62.0
@@ -582,6 +585,9 @@ packages:
   '@types/node@20.19.43':
     resolution: {integrity: sha512-6oYBAi5ikg4Pl+kGsoYtawUMBT2zZMCvPNF7pVLnHZfd1zf38DRiWn/gT01RYCdUqkv7Fhr+C9ot4/tb+2sVvA==}
 
+  '@unified-login/tauri@file:../../sdk/tauri':
+    resolution: {directory: ../../sdk/tauri, type: directory}
+
   '@vitest/expect@4.0.17':
     resolution: {integrity: sha512-mEoqP3RqhKlbmUmntNDDCJeTDavDR+fVYkSOw8qRwJFaW/0/5zA9zFeTrHqNtcmwh6j26yMmwx2PqUDPzt5ZAQ==}
 
@@ -1131,6 +1137,8 @@ snapshots:
     dependencies:
       undici-types: 6.21.0
     optional: true
+
+  '@unified-login/tauri@file:../../sdk/tauri': {}
 
   '@vitest/expect@4.0.17':
     dependencies:

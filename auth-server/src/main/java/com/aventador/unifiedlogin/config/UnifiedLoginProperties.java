@@ -1,7 +1,9 @@
 package com.aventador.unifiedlogin.config;
 
 import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.security.oauth2.core.oidc.OidcScopes;
 
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Objects;
 
@@ -29,7 +31,21 @@ public record UnifiedLoginProperties(
         return Objects.requireNonNullElseGet(bootstrap.adminEmails(), List::of);
     }
 
-    public record ClientConfig(String clientId, String clientName, List<String> redirectUris) {
+    public record ClientConfig(
+            String clientId,
+            String clientName,
+            List<String> redirectUris,
+            List<String> scopes) {
+
+        public List<String> scopesOrDefault() {
+            if (scopes == null || scopes.isEmpty()) {
+                return List.of(OidcScopes.OPENID);
+            }
+            LinkedHashSet<String> requiredScopes = new LinkedHashSet<>();
+            requiredScopes.add(OidcScopes.OPENID);
+            requiredScopes.addAll(scopes);
+            return List.copyOf(requiredScopes);
+        }
     }
 
     public record BootstrapConfig(List<String> adminEmails) {

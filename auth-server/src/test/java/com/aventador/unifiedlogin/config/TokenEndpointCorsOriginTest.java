@@ -20,11 +20,13 @@ class TokenEndpointCorsOriginTest {
                                 List.of(
                                         "myapp://callback",
                                         "http://127.0.0.1/callback",
-                                        "https://desktop.example.com/callback")),
+                                        "https://desktop.example.com/callback"),
+                                null),
                         new UnifiedLoginProperties.ClientConfig(
                                 "hostless-client",
                                 "Hostless Client",
-                                List.of("file:///tmp/callback"))),
+                                List.of("file:///tmp/callback"),
+                                null)),
                 null);
 
         assertThat(TokenEndpointCorsConfig.registeredClientOrigins(properties))

@@ -2,7 +2,7 @@ import { invoke } from '@tauri-apps/api/core'
 import {
   TauriAuthClient,
   type TauriAuthClientApi,
-} from '../../../sdk/tauri/ts/index'
+} from '@unified-login/tauri'
 
 export function createTauriAuthClient(): TauriAuthClientApi {
   return new TauriAuthClient(invoke)

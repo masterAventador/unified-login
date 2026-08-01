@@ -6,6 +6,7 @@ import {
   acceptanceSignalConfigurations,
   authServerEnvironment,
   credentialAccount,
+  legacyCredentialAccount,
   productionAppEnvironment,
 } from './acceptance-environment.mjs'
 
@@ -24,14 +25,15 @@ test('相同 PID 的每轮验收仍使用相互隔离的钥匙串 service', () =
   assert.notEqual(first, second)
 })
 
-test('验收脚本与 Rust 应用使用同一 issuer 和 client 凭据账号', () => {
+test('验收脚本与 Rust 应用使用同一稳定 issuer/client 凭据账号', () => {
+  const canonical = credentialAccount(
+    'refresh-token',
+    'http://localhost:9000',
+    'demo-desktop',
+  )
   assert.equal(
-    credentialAccount(
-      'refresh-token',
-      'http://localhost:9000',
-      'demo-desktop',
-    ),
-    'refresh-token:WIQfe4OExQeL_wrKK52Bq0zoALxUBWsX0qYCKjX5gJY',
+    canonical,
+    'refresh-token:ZizS0eIfryipppyfu9VJqPY867r3kNRp76tjJx6gj7Y',
   )
   assert.equal(
     credentialAccount(
@@ -39,7 +41,19 @@ test('验收脚本与 Rust 应用使用同一 issuer 和 client 凭据账号', (
       'http://localhost:9000/',
       'demo-desktop',
     ),
-    'refresh-token:WIQfe4OExQeL_wrKK52Bq0zoALxUBWsX0qYCKjX5gJY',
+    canonical,
+  )
+  assert.equal(
+    credentialAccount(
+      'refresh-token',
+      'http://localhost:9000',
+      'demo-desktop',
+    ),
+    credentialAccount(
+      'refresh-token',
+      'http://localhost:9000',
+      'demo-desktop',
+    ),
   )
   assert.notEqual(
     credentialAccount(
@@ -52,6 +66,22 @@ test('验收脚本与 Rust 应用使用同一 issuer 和 client 凭据账号', (
       'http://localhost:9000',
       'demo-desktop',
     ),
+  )
+  assert.notEqual(canonical, legacyCredentialAccount(
+    'refresh-token',
+    'http://localhost:9000',
+    'demo-desktop',
+  ))
+})
+
+test('验收脚本与旧版 Rust 应用使用同一 issuer/client 凭据账号', () => {
+  assert.equal(
+    legacyCredentialAccount(
+      'refresh-token',
+      'http://localhost:9000',
+      'demo-desktop',
+    ),
+    'refresh-token:WIQfe4OExQeL_wrKK52Bq0zoALxUBWsX0qYCKjX5gJY',
   )
 })
 

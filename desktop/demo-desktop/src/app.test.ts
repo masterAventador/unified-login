@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import type { TauriAuthClientApi } from '../../../sdk/tauri/ts/index'
+import type { TauriAuthClientApi } from '@unified-login/tauri'
 import { AuthController, type AuthView } from './app'
 
 describe('AuthController', () => {

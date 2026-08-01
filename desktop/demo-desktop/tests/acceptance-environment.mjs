@@ -11,16 +11,28 @@ export function acceptanceCredentialService(processId, runId) {
 }
 
 export function credentialAccount(baseAccount, issuer, clientId) {
+  return credentialAccountDigest(baseAccount, issuer, clientId, true)
+}
+
+export function legacyCredentialAccount(baseAccount, issuer, clientId) {
+  return credentialAccountDigest(baseAccount, issuer, clientId, false)
+}
+
+function credentialAccountDigest(baseAccount, issuer, clientId, scopedEnvelope) {
   const canonicalIssuer = new URL(issuer)
   if (!canonicalIssuer.pathname.endsWith('/')) {
     canonicalIssuer.pathname += '/'
   }
   const digest = createHash('sha256')
+  if (scopedEnvelope) {
+    digest.update('unified-login-tauri:scoped:v1').update('\0')
+  }
+  digest
     .update(canonicalIssuer.toString())
     .update('\0')
     .update(clientId)
-    .digest('base64url')
-  return `${baseAccount}:${digest}`
+  const encodedDigest = digest.digest('base64url')
+  return `${baseAccount}:${encodedDigest}`
 }
 
 export function acceptanceSignalConfigurations() {

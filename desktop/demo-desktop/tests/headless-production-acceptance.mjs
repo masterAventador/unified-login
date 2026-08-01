@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import { access, mkdtemp, readFile, realpath, rm } from 'node:fs/promises'
+import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -13,19 +14,21 @@ import {
   createProcessSupervisor,
   findAvailablePort,
 } from './acceptance-processes.mjs'
-import {
-  ACCEPTANCE_AUTH_ISSUER,
-  acceptanceAuthServerOverrides,
-} from './acceptance-auth-server.mjs'
+import { acceptanceAuthServerOverrides } from './acceptance-auth-server.mjs'
 import {
   acceptanceCredentialService,
   acceptanceSignalConfigurations,
   authServerEnvironment,
   credentialAccount,
+  legacyCredentialAccount,
   productionAppEnvironment,
 } from './acceptance-environment.mjs'
 import { responseIsOkWithin } from './acceptance-http.mjs'
 import { javaExecutable } from './acceptance-java.mjs'
+import {
+  createAuthorizationRequest,
+  exchangeAuthorizationCode,
+} from './acceptance-oauth.mjs'
 import { prepareWorkspace } from './acceptance-workspace.mjs'
 import {
   macosApplicationLauncherArguments,
@@ -58,8 +61,12 @@ const BROWSER_DRIVER_SOURCE = join(HERE, 'browser-opener-interceptor.c')
 const WEBVIEW_DRIVER_SOURCE = join(HERE, 'macos-webview-driver.m')
 const APPLICATION_LAUNCHER_SOURCE =
   join(HERE, 'macos-application-launcher.m')
-const AUTH_ISSUER = ACCEPTANCE_AUTH_ISSUER
-const AUTH_HEALTH_BASE = 'http://127.0.0.1:9000'
+const AUTH_PORT = await findAvailablePort()
+const AUTH_ISSUER = `http://localhost:${AUTH_PORT}`
+const AUTH_HEALTH_BASE = `http://127.0.0.1:${AUTH_PORT}`
+const AUTH_LOGIN_PATTERN = new RegExp(
+  `^http://localhost:${AUTH_PORT}/login`,
+)
 const DEMO_WEB_A_BASE = 'http://localhost:5173'
 const DEMO_WEB_A_HEALTH_BASE = 'http://127.0.0.1:5173'
 const VITE_EXECUTABLE = join(
@@ -72,6 +79,11 @@ const VITE_EXECUTABLE = join(
 const PASSWORD = 'a valid password'
 const CLIENT_ID = 'demo-desktop'
 const CREDENTIAL_ACCOUNT = credentialAccount(
+  'refresh-token',
+  AUTH_ISSUER,
+  CLIENT_ID,
+)
+const LEGACY_CREDENTIAL_ACCOUNT = legacyCredentialAccount(
   'refresh-token',
   AUTH_ISSUER,
   CLIENT_ID,
@@ -110,7 +122,7 @@ let cleanupPromise
 installSignalCleanup()
 
 try {
-  await assertLocalhostPortAvailable(9000)
+  await assertLocalhostPortAvailable(AUTH_PORT)
   await assertLocalhostPortAvailable(5173)
 
   const productionTarget = await currentRustHostTarget()
@@ -140,15 +152,20 @@ try {
     '认证中心生产包构建失败',
     AUTH_SERVER_DIRECTORY,
   )
-  await prepareWorkspace(run, DEMO_WEB_A_DIRECTORY, 'Demo Web A')
+  await prepareWorkspace(
+    run,
+    DEMO_WEB_A_DIRECTORY,
+    'Demo Web A',
+    { VITE_UNIFIED_LOGIN_ISSUER: AUTH_ISSUER },
+  )
 
   report('后台启动本轮认证中心与真实 Demo Web A')
   authServer = startAuthServer()
   await waitForService(
     `${AUTH_HEALTH_BASE}/.well-known/openid-configuration`,
     authServer,
-    9000,
-    '本轮认证中心没有在 9000 端口就绪',
+    AUTH_PORT,
+    `本轮认证中心没有在 ${AUTH_PORT} 端口就绪`,
     60_000,
   )
   demoWebA = startDemoWebA()
@@ -161,7 +178,24 @@ try {
   )
 
   report('最终生产应用隐藏完成伪造回调、首次登录与网页到桌面 SSO')
-  await withProductionApp(artifact, loginAndSso)
+  const migrationRefreshToken = await withProductionApp(
+    artifact,
+    loginAndSso,
+  )
+
+  report('把真实 refresh token 移回旧账号，模拟从上一版升级')
+  await prepareLegacyCredentialMigration(migrationRefreshToken)
+
+  report('最终生产应用从真实旧钥匙串账号迁移并恢复登录')
+  await withProductionApp(
+    artifact,
+    restoreMigratedCredential,
+    {
+      UNIFIED_LOGIN_LEGACY_CREDENTIAL_ACCOUNT:
+        LEGACY_CREDENTIAL_ACCOUNT,
+      UNIFIED_LOGIN_LEGACY_REFRESH_TOKEN: migrationRefreshToken,
+    },
+  )
 
   report('最终生产应用隐藏重启后从系统凭据库恢复并写回轮换凭据')
   await withProductionApp(artifact, restoreRotatedCredential)
@@ -272,7 +306,10 @@ function startAuthServer() {
       cwd: AUTH_SERVER_DIRECTORY,
       env: authServerEnvironment(
         process.env,
-        acceptanceAuthServerOverrides(temporaryDirectory),
+        acceptanceAuthServerOverrides(temporaryDirectory, {
+          issuer: AUTH_ISSUER,
+          port: AUTH_PORT,
+        }),
       ),
       stdio: 'ignore',
     },
@@ -299,7 +336,11 @@ function startDemoWebA() {
   )
 }
 
-async function withProductionApp(artifact, scenario) {
+async function withProductionApp(
+  artifact,
+  scenario,
+  environmentOverrides = {},
+) {
   const driverPort = await findAvailablePort()
   await assertPortAvailable(driverPort)
   const driverToken = randomUUID().repeat(2)
@@ -308,11 +349,13 @@ async function withProductionApp(artifact, scenario) {
       `${browserDriverLibrary}:${webviewDriverLibrary}`,
     UNIFIED_LOGIN_BROWSER_URL_FILE: browserUrlFile,
     UNIFIED_LOGIN_CREDENTIAL_SERVICE: ACCEPTANCE_SERVICE,
+    UNIFIED_LOGIN_ISSUER: AUTH_ISSUER,
     UNIFIED_LOGIN_INTERCEPT_EXECUTABLE: '/usr/bin/open',
     UNIFIED_LOGIN_WEBVIEW_DRIVER_EXECUTABLE: BINARY_NAME,
     UNIFIED_LOGIN_WEBVIEW_DRIVER_PORT: String(driverPort),
     UNIFIED_LOGIN_WEBVIEW_DRIVER_TOKEN: driverToken,
     UNIFIED_LOGIN_WINDOW_STARTUP_MODE: 'hidden',
+    ...environmentOverrides,
   }
   const child = processSupervisor.start(
     applicationLauncher,
@@ -332,7 +375,7 @@ async function withProductionApp(artifact, scenario) {
     applicationProcessId =
       await waitForMacosApplicationProcessId(child)
     await waitForDriver(driver, child)
-    await scenario(driver)
+    return await scenario(driver)
   } finally {
     await stopProductionApp(driver, child, applicationProcessId)
   }
@@ -407,7 +450,7 @@ async function loginAndSso(driver) {
     await clickAction(driver, 'retry-button')
     await page.goto(await capturedAuthorization())
     await playwrightExpect(page).toHaveURL(
-      /^http:\/\/localhost:9000\/login/,
+      AUTH_LOGIN_PATTERN,
     )
     await page.fill('#username', email)
     await page.fill('#password', PASSWORD)
@@ -431,7 +474,7 @@ async function loginAndSso(driver) {
     await page.goto(DEMO_WEB_A_BASE)
     await page.getByTestId('login-button').click()
     await playwrightExpect(page).toHaveURL(
-      /^http:\/\/localhost:9000\/login/,
+      AUTH_LOGIN_PATTERN,
     )
     await page.fill('#username', email)
     await page.fill('#password', PASSWORD)
@@ -451,7 +494,7 @@ async function loginAndSso(driver) {
     const navigationListener = (frame) => {
       if (
         frame === page.mainFrame()
-        && /^http:\/\/localhost:9000\/login/.test(frame.url())
+        && AUTH_LOGIN_PATTERN.test(frame.url())
       ) {
         loginNavigations.push(frame.url())
       }
@@ -468,6 +511,7 @@ async function loginAndSso(driver) {
     assert.deepEqual(loginNavigations, [])
     await waitForAction(driver, 'logout-button')
     await assertKeychainEntryPresent()
+    return await issueMigrationRefreshToken(page)
   } finally {
     await context.close()
     await headlessBrowser.close()
@@ -487,6 +531,12 @@ async function restoreRotatedCredential(driver) {
   await assertKeychainEntryPresent()
   await waitForAction(driver, 'logout-button')
   await assertKeychainEntryPresent()
+}
+
+async function restoreMigratedCredential(driver) {
+  await waitForAction(driver, 'logout-button')
+  await assertKeychainEntryPresent()
+  await assertKeychainEntryMissing(LEGACY_CREDENTIAL_ACCOUNT)
 }
 
 async function remainsLoggedOut(driver) {
@@ -567,23 +617,23 @@ function callbackUrl(authorization, code, state) {
   return callback.toString()
 }
 
-async function assertKeychainEntryPresent() {
+async function assertKeychainEntryPresent(account = CREDENTIAL_ACCOUNT) {
   assert.equal(
-    await keychainEntryStatus(),
+    await keychainEntryStatus(account),
     0,
     '系统凭据库缺少 refresh token',
   )
 }
 
-async function assertKeychainEntryMissing() {
+async function assertKeychainEntryMissing(account = CREDENTIAL_ACCOUNT) {
   assert.equal(
-    await keychainEntryStatus(),
+    await keychainEntryStatus(account),
     44,
     '系统凭据库仍残留 refresh token',
   )
 }
 
-async function keychainEntryStatus() {
+async function keychainEntryStatus(account) {
   const result = await processSupervisor.capture(
     '/usr/bin/security',
     [
@@ -591,10 +641,92 @@ async function keychainEntryStatus() {
       '-s',
       ACCEPTANCE_SERVICE,
       '-a',
-      CREDENTIAL_ACCOUNT,
+      account,
     ],
   )
   return result.code
+}
+
+async function prepareLegacyCredentialMigration(refreshToken) {
+  if (typeof refreshToken !== 'string' || refreshToken.length === 0) {
+    throw new Error('缺少真实 OAuth 流程签发的迁移 refresh token')
+  }
+  await deleteCredential(CREDENTIAL_ACCOUNT)
+  await assertKeychainEntryMissing()
+  await assertKeychainEntryMissing(LEGACY_CREDENTIAL_ACCOUNT)
+}
+
+async function issueMigrationRefreshToken(page) {
+  let authorizationRequest
+  let resolveCallback
+  let rejectCallback
+  const callback = new Promise((resolve, reject) => {
+    resolveCallback = resolve
+    rejectCallback = reject
+  })
+  const server = createServer((request, response) => {
+    try {
+      if (authorizationRequest === undefined) {
+        throw new Error('迁移授权请求尚未初始化')
+      }
+      const callbackUrl = new URL(
+        request.url ?? '/',
+        authorizationRequest.redirectUri,
+      )
+      const code = callbackUrl.searchParams.get('code')
+      const state = callbackUrl.searchParams.get('state')
+      if (
+        callbackUrl.pathname !== '/callback'
+        || code === null
+        || state !== authorizationRequest.state
+      ) {
+        response.writeHead(400, { 'Content-Type': 'text/plain' })
+        response.end('invalid callback')
+        throw new Error('真实迁移授权回调无效')
+      }
+      response.writeHead(200, { 'Content-Type': 'text/plain' })
+      response.end('authorization complete')
+      resolveCallback(code)
+    } catch (error) {
+      rejectCallback(error)
+    }
+  })
+  await new Promise((resolve, reject) => {
+    server.once('error', reject)
+    server.listen(0, '127.0.0.1', resolve)
+  })
+  const address = server.address()
+  if (address === null || typeof address === 'string') {
+    server.close()
+    throw new Error('无法取得真实迁移授权回环端口')
+  }
+  authorizationRequest = createAuthorizationRequest({
+    clientId: CLIENT_ID,
+    issuer: AUTH_ISSUER,
+    redirectUri: `http://127.0.0.1:${address.port}/callback`,
+  })
+
+  try {
+    await page.goto(authorizationRequest.authorizationUrl)
+    const code = await Promise.race([
+      callback,
+      new Promise((_, reject) => {
+        setTimeout(
+          () => reject(new Error('真实迁移授权回调超时')),
+          20_000,
+        )
+      }),
+    ])
+    return await exchangeAuthorizationCode({
+      clientId: CLIENT_ID,
+      code,
+      issuer: AUTH_ISSUER,
+      redirectUri: authorizationRequest.redirectUri,
+      verifier: authorizationRequest.verifier,
+    })
+  } finally {
+    await new Promise((resolve) => server.close(resolve))
+  }
 }
 
 async function waitForService(
@@ -630,7 +762,7 @@ async function waitUntil(predicate, failureMessage, timeout) {
   throw new Error(failureMessage)
 }
 
-async function deleteCredential() {
+async function deleteCredential(account = CREDENTIAL_ACCOUNT) {
   const result = await processSupervisor.capture(
     '/usr/bin/security',
     [
@@ -638,7 +770,7 @@ async function deleteCredential() {
       '-s',
       ACCEPTANCE_SERVICE,
       '-a',
-      CREDENTIAL_ACCOUNT,
+      account,
     ],
   )
   if (![0, 44].includes(result.code ?? -1)) {
@@ -651,11 +783,13 @@ async function run(
   arguments_,
   failureMessage,
   cwd = PROJECT_DIRECTORY,
+  environmentOverrides = undefined,
 ) {
   const result = await processSupervisor.run(executable, arguments_, {
     cwd,
     env: {
       ...process.env,
+      ...environmentOverrides,
       PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1',
     },
     stdio: 'inherit',
@@ -703,6 +837,10 @@ async function cleanupResources() {
   authServer = undefined
   await captureCleanupFailure(() => processSupervisor.stopAll(), failures)
   await captureCleanupFailure(() => deleteCredential(), failures)
+  await captureCleanupFailure(
+    () => deleteCredential(LEGACY_CREDENTIAL_ACCOUNT),
+    failures,
+  )
   await captureCleanupFailure(
     () => rm(temporaryDirectory, { recursive: true, force: true }),
     failures,

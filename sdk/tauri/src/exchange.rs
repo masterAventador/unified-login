@@ -41,17 +41,47 @@ pub struct TokenClient {
     endpoint: Url,
     client_id: String,
     http: reqwest::Client,
+    expected_scopes: Option<Vec<String>>,
 }
 
 impl TokenClient {
     pub fn new(issuer: &str, client_id: &str) -> Result<Self, TokenError> {
-        Self::new_with_request_timeout(issuer, client_id, TOKEN_REQUEST_TIMEOUT)
+        Self::new_with_options(issuer, client_id, TOKEN_REQUEST_TIMEOUT, None)
     }
 
+    pub fn new_with_scopes(
+        issuer: &str,
+        client_id: &str,
+        scopes: &[String],
+    ) -> Result<Self, TokenError> {
+        if scopes.is_empty() || scopes.iter().any(String::is_empty) {
+            return Err(TokenError::Protocol("scope 不能为空".to_owned()));
+        }
+        let mut expected_scopes = scopes.to_vec();
+        expected_scopes.sort_unstable();
+        expected_scopes.dedup();
+        Self::new_with_options(
+            issuer,
+            client_id,
+            TOKEN_REQUEST_TIMEOUT,
+            Some(expected_scopes),
+        )
+    }
+
+    #[cfg(test)]
     fn new_with_request_timeout(
         issuer: &str,
         client_id: &str,
         request_timeout: Duration,
+    ) -> Result<Self, TokenError> {
+        Self::new_with_options(issuer, client_id, request_timeout, None)
+    }
+
+    fn new_with_options(
+        issuer: &str,
+        client_id: &str,
+        request_timeout: Duration,
+        expected_scopes: Option<Vec<String>>,
     ) -> Result<Self, TokenError> {
         let issuer = validated_issuer(issuer).map_err(TokenError::Protocol)?;
         let bypass_proxy = issuer_uses_loopback(&issuer);
@@ -76,6 +106,7 @@ impl TokenClient {
             endpoint,
             client_id: client_id.to_owned(),
             http,
+            expected_scopes,
         })
     }
 
@@ -141,6 +172,19 @@ impl TokenClient {
         if payload.access_token.is_empty() {
             return Err(TokenError::Protocol("令牌响应缺少 access_token".to_owned()));
         }
+        if let (Some(expected), Some(granted)) = (&self.expected_scopes, payload.scope) {
+            let mut granted = granted
+                .split_ascii_whitespace()
+                .map(str::to_owned)
+                .collect::<Vec<_>>();
+            granted.sort_unstable();
+            granted.dedup();
+            if &granted != expected {
+                return Err(TokenError::Protocol(
+                    "令牌响应授予的 scope 与客户端配置不一致".to_owned(),
+                ));
+            }
+        }
 
         Ok(TokenResponse {
             access_token: payload.access_token,
@@ -163,6 +207,7 @@ struct TokenPayload {
     refresh_token: Option<String>,
     id_token: Option<String>,
     expires_in: u64,
+    scope: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -248,6 +293,38 @@ mod tests {
                     "http://127.0.0.1:49152/callback".to_owned(),
                 ),
             ])
+        );
+    }
+
+    #[tokio::test]
+    async fn configured_client_rejects_a_token_response_with_reduced_scopes() {
+        let (issuer, _) = fake_token_endpoint(
+            200,
+            r#"{
+                "access_token":"access-one",
+                "refresh_token":"refresh-one",
+                "expires_in":900,
+                "scope":"openid"
+            }"#,
+        );
+        let client = TokenClient::new_with_scopes(
+            &issuer,
+            "demo-desktop",
+            &["openid".to_owned(), "profile".to_owned()],
+        )
+        .expect("客户端配置应合法");
+
+        let result = client
+            .exchange_code(
+                "one-time-code",
+                "pkce-verifier",
+                "http://127.0.0.1:49152/callback",
+            )
+            .await;
+
+        assert!(
+            matches!(result, Err(TokenError::Protocol(_))),
+            "令牌端缩减授权 scope 时必须拒绝建立错误会话，实际为 {result:?}",
         );
     }
 

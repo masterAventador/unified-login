@@ -1,0 +1,9 @@
+{
+  "identifier": "default",
+  "description": "第二个桌面应用只授予统一登录 SDK 默认权限",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "unified-login-tauri:default"
+  ]
+}

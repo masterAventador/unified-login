@@ -35,6 +35,8 @@ export function webviewDriverCompilerArguments({
     '-framework',
     'Foundation',
     '-framework',
+    'Security',
+    '-framework',
     'WebKit',
     '-o',
     output,

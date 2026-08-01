@@ -1,5 +1,6 @@
 #import <AppKit/AppKit.h>
 #import <Foundation/Foundation.h>
+#import <Security/Security.h>
 #import <WebKit/WebKit.h>
 
 #include <arpa/inet.h>
@@ -10,6 +11,33 @@
 
 static const NSUInteger MAX_REQUEST_BYTES = 1024 * 1024;
 static const int DRIVER_TIMEOUT_SECONDS = 20;
+
+static void seed_legacy_credential(
+    NSDictionary<NSString *, NSString *> *environment) {
+  NSString *service =
+      environment[@"UNIFIED_LOGIN_CREDENTIAL_SERVICE"];
+  NSString *account =
+      environment[@"UNIFIED_LOGIN_LEGACY_CREDENTIAL_ACCOUNT"];
+  NSString *secret =
+      environment[@"UNIFIED_LOGIN_LEGACY_REFRESH_TOKEN"];
+  if (service.length == 0 || account.length == 0 || secret.length == 0) {
+    return;
+  }
+
+  NSData *secret_data = [secret dataUsingEncoding:NSUTF8StringEncoding];
+  NSDictionary *query = @{
+    (__bridge id)kSecClass : (__bridge id)kSecClassGenericPassword,
+    (__bridge id)kSecAttrService : service,
+    (__bridge id)kSecAttrAccount : account,
+    (__bridge id)kSecValueData : secret_data,
+  };
+  OSStatus status = SecItemAdd((__bridge CFDictionaryRef)query, NULL);
+  unsetenv("UNIFIED_LOGIN_LEGACY_CREDENTIAL_ACCOUNT");
+  unsetenv("UNIFIED_LOGIN_LEGACY_REFRESH_TOKEN");
+  if (status != errSecSuccess) {
+    return;
+  }
+}
 
 static WKWebView *find_webview_in_view(NSView *view) {
   if ([view isKindOfClass:[WKWebView class]]) {
@@ -198,6 +226,7 @@ __attribute__((constructor)) static void start_webview_driver(void) {
             isEqualToString:expected_executable]) {
       return;
     }
+    seed_legacy_credential(environment);
     NSString *port_value =
         environment[@"UNIFIED_LOGIN_WEBVIEW_DRIVER_PORT"];
     NSString *token = environment[@"UNIFIED_LOGIN_WEBVIEW_DRIVER_TOKEN"];
