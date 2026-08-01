@@ -2,6 +2,7 @@ const PLATFORM_TEST =
   'tests/acceptance-unit-platform.node-test.mjs'
 const PORTABLE_TESTS = [
   PLATFORM_TEST,
+  'tests/bundle-configuration.node-test.mjs',
   'tests/acceptance-auth-server.node-test.mjs',
   'tests/acceptance-environment.node-test.mjs',
   'tests/acceptance-http.node-test.mjs',
