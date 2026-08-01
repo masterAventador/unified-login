@@ -34,6 +34,7 @@ test('桌面 OAuth 链路在无头系统浏览器中完成首登、SSO、恢复�
   await registerThroughUi(page, email)
 
   const first = await startAuthorizationAttempt()
+  let firstTokens: TokenPayload
   try {
     await page.goto(first.authorizationUrl)
     await expect(page).toHaveURL(/^http:\/\/localhost:9000\/login/)
@@ -44,7 +45,7 @@ test('桌面 OAuth 链路在无头系统浏览器中完成首登、SSO、恢复�
     const firstCallback = await first.callbackResult
     expect(firstCallback.accepted).toBe(true)
     expect(firstCallback.code).toBeTruthy()
-    const firstTokens = await exchangeCode(
+    firstTokens = await exchangeCode(
       request,
       firstCallback.code!,
       first.verifier,
@@ -96,6 +97,11 @@ test('桌面 OAuth 链路在无头系统浏览器中完成首登、SSO、恢复�
   expect(replay.status()).toBe(400)
   expect(await replay.json()).toMatchObject({ error: 'invalid_grant' })
 
+  // 第二次提交一次性令牌代表凭证已泄漏：不仅拒绝旧令牌，还必须撤销轮转后的
+  // 新令牌与同一账号的独立首登会话，不能退化成框架默认的“只拒绝旧令牌”。
+  await expectRefreshRejected(request, restoredTokens.refreshToken)
+  await expectRefreshRejected(request, firstTokens.refreshToken)
+
   const forged = await startAuthorizationAttempt()
   try {
     const forgedResponse = await request.get(
@@ -145,6 +151,24 @@ async function refreshTokens(
   })
   expect(response.status()).toBe(200)
   return tokenPayload(await response.json())
+}
+
+async function expectRefreshRejected(
+  request: APIRequestContext,
+  refreshToken: string,
+): Promise<void> {
+  const response = await request.post(`${AUTH_BASE}/oauth2/token`, {
+    form: {
+      grant_type: 'refresh_token',
+      client_id: DESKTOP_CLIENT_ID,
+      refresh_token: refreshToken,
+    },
+  })
+  expect(response.status()).toBe(400)
+  const payload = await response.json() as Record<string, unknown>
+  expect(payload).toMatchObject({ error: 'invalid_grant' })
+  expect(payload).not.toHaveProperty('access_token')
+  expect(payload).not.toHaveProperty('refresh_token')
 }
 
 function tokenPayload(payload: Record<string, unknown>): TokenPayload {

@@ -12,6 +12,9 @@ import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.web.servlet.MockMvc;
 
+import java.util.UUID;
+
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -88,6 +91,39 @@ class AccountStatusRefreshTokenTest {
                 .andExpect(jsonPath("$.sub").value(issued.userId()));
     }
 
+    @Test
+    void replayedRefreshTokenRevokesEverySessionOfThatUserOnly() throws Exception {
+        String compromisedEmail = "refresh-replay@example.com";
+        IssuedTokens compromised = freshRefreshTokenFor(compromisedEmail);
+        String secondSessionRefreshToken = additionalRefreshTokenFor(compromisedEmail);
+        IssuedTokens otherUser = freshRefreshTokenFor("refresh-replay-other@example.com");
+
+        String rotatedRefreshToken = OAuth2TestFlows.jsonField(
+                OAuth2TestFlows.refreshTokens(mockMvc, compromised.refreshToken()), "refresh_token");
+
+        String storedFingerprint = jdbcTemplate.queryForObject("""
+                SELECT token_hash
+                FROM oauth2_used_refresh_token
+                WHERE user_id = ?
+                """, String.class, UUID.fromString(compromised.userId()));
+        assertThat(storedFingerprint)
+                .as("数据库只能保存不可逆指纹，不能保存可直接换取凭证的原始刷新令牌")
+                .hasSize(64)
+                .isNotEqualTo(compromised.refreshToken());
+
+        // 第一把令牌已被轮转，再次提交就是泄漏信号。它本身必须被拒，且应触发全账号撤销。
+        assertRefreshIssuesNothing(compromised.refreshToken());
+        assertRefreshIssuesNothing(rotatedRefreshToken);
+        assertRefreshIssuesNothing(secondSessionRefreshToken);
+
+        // 撤销边界必须是不可变用户 ID，不能误伤另一账号。
+        String otherAccessToken = OAuth2TestFlows.jsonField(
+                OAuth2TestFlows.refreshTokens(mockMvc, otherUser.refreshToken()), "access_token");
+        mockMvc.perform(get("/userinfo").header("Authorization", "Bearer " + otherAccessToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.sub").value(otherUser.userId()));
+    }
+
     private void assertRefreshIssuesNothing(String refreshToken) throws Exception {
         mockMvc.perform(post("/oauth2/token")
                         .param("grant_type", "refresh_token")
@@ -104,10 +140,13 @@ class AccountStatusRefreshTokenTest {
 
     private IssuedTokens freshRefreshTokenFor(String email) throws Exception {
         AppUser user = registrationService.register(email, PASSWORD);
+        return new IssuedTokens(user.getId().toString(), additionalRefreshTokenFor(email));
+    }
+
+    private String additionalRefreshTokenFor(String email) throws Exception {
         String tokenResponse = OAuth2TestFlows.exchangeCode(mockMvc,
                 OAuth2TestFlows.authorizeAndExtractCode(mockMvc,
                         OAuth2TestFlows.login(mockMvc, email, PASSWORD)));
-        return new IssuedTokens(user.getId().toString(),
-                OAuth2TestFlows.jsonField(tokenResponse, "refresh_token"));
+        return OAuth2TestFlows.jsonField(tokenResponse, "refresh_token");
     }
 }

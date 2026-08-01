@@ -1,5 +1,7 @@
 package com.aventador.unifiedlogin.config;
 
+import com.aventador.unifiedlogin.account.TokenRevocationService;
+import com.aventador.unifiedlogin.account.UsedRefreshTokenStore;
 import com.aventador.unifiedlogin.account.UserTokenLock;
 import org.junit.jupiter.api.Test;
 import org.springframework.security.authentication.AuthenticationProvider;
@@ -36,6 +38,10 @@ class AccountStatusRefreshTokenAuthenticationProviderTest {
 
     private final UserTokenLock userTokenLock = mock(UserTokenLock.class);
 
+    private final UsedRefreshTokenStore usedRefreshTokenStore = mock(UsedRefreshTokenStore.class);
+
+    private final TokenRevocationService tokenRevocationService = mock(TokenRevocationService.class);
+
     private final PlatformTransactionManager transactionManager = mock(PlatformTransactionManager.class);
 
     @Test
@@ -46,7 +52,8 @@ class AccountStatusRefreshTokenAuthenticationProviderTest {
 
         AccountStatusRefreshTokenAuthenticationProvider.guardRefreshTokenProvider(
                 providers, this.authorizationService, this.userDetailsService,
-                this.userTokenLock, this.transactionManager);
+                this.userTokenLock, this.usedRefreshTokenStore,
+                this.tokenRevocationService, this.transactionManager);
 
         assertThat(providers).hasSize(2);
         // 其余 provider 必须原封不动：装配逻辑越界会把授权码等授权类型一并改掉
@@ -61,7 +68,8 @@ class AccountStatusRefreshTokenAuthenticationProviderTest {
         assertThatExceptionOfType(IllegalStateException.class)
                 .isThrownBy(() -> AccountStatusRefreshTokenAuthenticationProvider.guardRefreshTokenProvider(
                         providers, this.authorizationService, this.userDetailsService,
-                        this.userTokenLock, this.transactionManager));
+                        this.userTokenLock, this.usedRefreshTokenStore,
+                        this.tokenRevocationService, this.transactionManager));
     }
 
     private OAuth2RefreshTokenAuthenticationProvider frameworkRefreshTokenProvider() {

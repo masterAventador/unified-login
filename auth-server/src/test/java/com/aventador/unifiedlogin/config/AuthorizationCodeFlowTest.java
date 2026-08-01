@@ -241,7 +241,7 @@ class AuthorizationCodeFlowTest {
     }
 
     @Test
-    void refreshTokenRotatesAndOldOneIsRejected() throws Exception {
+    void refreshTokenRotatesAndReplayRevokesTheRotatedChain() throws Exception {
         String tokenResponse = exchangeCode(mockMvc, authorizeAndExtractCode(mockMvc, session));
         String firstRefreshToken = jsonField(tokenResponse, "refresh_token");
 
@@ -252,7 +252,10 @@ class AuthorizationCodeFlowTest {
         // 下一步的「旧令牌被拒」也就无从谈起了
         assertThat(secondRefreshToken).isNotEqualTo(firstRefreshToken);
 
-        // 轮转后旧 refresh token 必须失效
+        // 重放发生前，新令牌必须能继续续期；否则只是把刷新功能整体写坏了。
+        String thirdRefreshToken = jsonField(refreshTokens(mockMvc, secondRefreshToken), "refresh_token");
+
+        // 轮转后旧 refresh token 必须失效，且第二次提交代表凭证泄漏。
         mockMvc.perform(post("/oauth2/token")
                         .param("grant_type", "refresh_token")
                         .param("client_id", CLIENT_ID)
@@ -260,8 +263,13 @@ class AuthorizationCodeFlowTest {
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.error").value("invalid_grant"));
 
-        // 旧的作废不该波及新的：新令牌仍须能继续续期，否则用户每次刷新都会被登出
-        assertThat(jsonField(refreshTokens(mockMvc, secondRefreshToken), "access_token")).isNotBlank();
+        // 泄漏后必须撤销整个轮转链，而不是退回框架默认的“只拒绝被复用的那一把”。
+        mockMvc.perform(post("/oauth2/token")
+                        .param("grant_type", "refresh_token")
+                        .param("client_id", CLIENT_ID)
+                        .param("refresh_token", thirdRefreshToken))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("invalid_grant"));
     }
 
     /**
