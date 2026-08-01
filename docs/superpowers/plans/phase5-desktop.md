@@ -146,8 +146,8 @@ sdk/tauri/                      可复用的桌面端套件（若决定抽包）
 
 ## Task 7：Windows 实机复验待办
 
-> 状态：**已于 2026-08-01 在 Windows 11 真机完成**。验收使用从干净提交
-> `b77e4dd4d4fb0afa8efa731b02cb80c7ca5c2bdf` 全新克隆、构建并重装的 release MSI，
+> 状态：**已于 2026-08-02 在 Windows 11 真机用当前候选再次完成**。最新验收使用从
+> 干净提交 `3b470fcc3fd303505607b7eec7d8613343c7992d` 全新克隆、构建并重装的 release MSI，
 > 覆盖 Windows Credential Manager、默认浏览器调用、WebView2、随机回环端口、两次
 > 重启轮换和缺失凭据降级；逐项脱敏证据见
 > [`docs/WINDOWS-TAURI-ACCEPTANCE.md`](../../WINDOWS-TAURI-ACCEPTANCE.md)。

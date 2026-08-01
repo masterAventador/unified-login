@@ -5,7 +5,7 @@
 这份清单只补 macOS 无法代替的 Windows 真机证据：MSI、Windows Credential
 Manager、系统默认浏览器、WebView2、回环随机端口和 Windows 防火墙。
 
-- 候选分支：`phase5-desktop`
+- 候选分支：`tauri-sdk-integration`
 - 只有本清单全部通过后，阶段五才能声明跨平台完成并合并 `main`
 - 任一必验项失败都按 `BLOCKED` 上报，不要改成 `tauri dev`、明文凭据文件或内嵌
   WebView 绕过
@@ -30,9 +30,15 @@ Manager、系统默认浏览器、WebView2、回环随机端口和 Windows 防�
 在 PowerShell 中进入仓库后执行：
 
 ```powershell
-git fetch origin
-git switch phase5-desktop
-git pull --ff-only origin phase5-desktop
+$candidate = "3b470fcc3fd303505607b7eec7d8613343c7992d"
+$sourceWorktree = (Get-Location).Path
+$candidateWorktree = Join-Path (Split-Path $sourceWorktree -Parent) 'unified-login-windows-candidate-3b470fc'
+if (Test-Path -LiteralPath $candidateWorktree) {
+  throw "候选工作树已存在，请先确认并清理：$candidateWorktree"
+}
+git fetch origin tauri-sdk-integration
+git worktree add --detach $candidateWorktree $candidate
+Set-Location -LiteralPath $candidateWorktree
 git status --short
 git rev-parse HEAD
 
@@ -48,21 +54,42 @@ winget list "Microsoft Edge WebView2 Runtime"
 要求：
 
 - `git status --short` 没有输出
+- `git rev-parse HEAD` 与 `$candidate` 完全相同；候选必须在新 worktree 中，不要让检出候选的
+  操作把当前清单回退成旧版本
 - Rust host 是 `x86_64-pc-windows-msvc`，不是 GNU 工具链
 - 已安装 Visual Studio C++ Build Tools、Windows SDK 和 WebView2 Runtime
 - 记录 Windows 版本、默认浏览器及以上版本输出；若 `winget` 查不到 WebView2，
   从“设置 → 应用 → 已安装的应用”记录版本
-- 开始前确认 `9000` 和 `55432` 没有被其他项目占用：
+- 开始前确认本清单会使用的全部端口都没有被其他项目占用：
 
 ```powershell
-Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue |
-  Where-Object LocalPort -In 9000, 55432
+$acceptancePorts = 9000, 9001, 19001, 5173, 5174, 5175, 5274, 8000, 55432
+$occupiedPorts = Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue |
+  Where-Object LocalPort -In $acceptancePorts
+if ($occupiedPorts) {
+  $occupiedPorts | Format-Table -AutoSize
+  throw "验收端口已被占用"
+}
 ```
 
 ## 4. Windows 本机门禁与 MSI
 
 ```powershell
-cd desktop\demo-desktop
+$env:PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD = "1"
+
+Push-Location sdk\tauri
+pnpm install --frozen-lockfile
+pnpm test
+pnpm typecheck
+pnpm test:consumer
+cargo fmt --all -- --check
+cargo test --locked
+cargo test --locked --test system_credentials -- --ignored
+cargo clippy --locked --all-targets -- -D warnings
+cargo package --locked
+Pop-Location
+
+Push-Location desktop\demo-desktop
 $env:PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD = "1"
 
 pnpm install --frozen-lockfile
@@ -76,13 +103,6 @@ cargo test --locked
 cargo clippy --locked --all-targets -- -D warnings
 cd ..
 
-Push-Location ..\..\sdk\tauri
-cargo fmt --all -- --check
-cargo test --locked
-cargo test --locked --test system_credentials -- --ignored
-cargo clippy --locked --all-targets -- -D warnings
-Pop-Location
-
 pnpm tauri build --bundles msi
 
 $msi = Get-ChildItem .\src-tauri\target\release\bundle\msi\*.msi |
@@ -90,6 +110,13 @@ $msi = Get-ChildItem .\src-tauri\target\release\bundle\msi\*.msi |
   Select-Object -First 1
 $msi.FullName
 Get-FileHash $msi.FullName -Algorithm SHA256
+Pop-Location
+
+$dirtyFiles = git status --short
+if ($dirtyFiles) {
+  $dirtyFiles
+  throw "门禁改变了固定候选工作树，拒绝继续验收"
+}
 ```
 
 以上命令必须全部退出码为 0。保存 MSI 路径和 SHA-256，不要用 `pnpm tauri dev`
@@ -109,7 +136,42 @@ docker run --rm --name unified-login-e2e-postgres `
   -p 127.0.0.1:55432:5432 postgres:16-alpine
 ```
 
-窗口 B 在 `auth-server` 目录构建并启动当前候选提交：
+PostgreSQL 健康后，先在原仓库终端执行当前候选的完整项目级 E2E；它会自行拉起并停止认证
+中心、API 与三个 Web 前端，不要同时手工占用这些端口：
+
+```powershell
+Push-Location demo\demo-api
+$env:UV_PROJECT_ENVIRONMENT = (Join-Path (Get-Location) '.venv')
+if (-not (Test-Path (Join-Path $env:UV_PROJECT_ENVIRONMENT 'Scripts\python.exe'))) {
+  $python = (uv python find 3.12).Trim()
+  & $python -m venv $env:UV_PROJECT_ENVIRONMENT
+}
+uv sync --locked
+Pop-Location
+
+pnpm --dir sdk\web-ts install --frozen-lockfile
+pnpm --dir demo\demo-web-a install --frozen-lockfile
+pnpm --dir demo\demo-web-b install --frozen-lockfile
+pnpm --dir demo\demo-api\frontend install --frozen-lockfile
+pnpm --dir admin-web install --frozen-lockfile
+
+Push-Location e2e
+$env:PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD = "1"
+pnpm install --frozen-lockfile
+pnpm test:process-control
+pnpm test
+Pop-Location
+
+$remainingE2eListeners = Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue |
+  Where-Object LocalPort -In 9000, 9001, 19001, 5173, 5174, 5175, 5274, 8000
+if ($remainingE2eListeners) {
+  $remainingE2eListeners | Format-Table -AutoSize
+  throw "项目级 E2E 遗留了监听进程"
+}
+```
+
+E2E 全部退出后，窗口 B 再进入 `auth-server` 目录构建并启动当前候选提交，供 MSI 手工链路
+持续使用：
 
 ```powershell
 $env:DB_URL = "jdbc:postgresql://127.0.0.1:55432/unified_login"
@@ -221,12 +283,14 @@ Windows Tauri 验收
 - MSI SHA-256:
 
 门禁
-- pnpm install --frozen-lockfile: PASS / FAIL
-- pnpm test: PASS / FAIL
-- pnpm typecheck: PASS / FAIL
-- pnpm test:acceptance:unit: PASS / FAIL
-- cargo fmt/test/clippy: PASS / FAIL
+- Tauri SDK pnpm install/test/typecheck/test:consumer: PASS / FAIL
+- Tauri SDK cargo fmt/test/clippy/package: PASS / FAIL
+- Tauri SDK Credential Manager 实机往返: PASS / FAIL
+- 桌面端 pnpm install/test/typecheck/test:acceptance:unit: PASS / FAIL
+- 桌面壳 cargo fmt/test/clippy: PASS / FAIL
 - pnpm tauri build --bundles msi: PASS / FAIL
+- E2E 各前端工作区与 Python 环境依赖安装: PASS / FAIL
+- E2E test:process-control / Playwright: PASS / FAIL
 
 真实场景
 - release MSI 安装并从开始菜单启动: PASS / FAIL
@@ -301,17 +365,76 @@ Chrome 顶层窗口，因此默认浏览器这一项采用三组互相独立的�
 无头通道执行，19 项全部通过；结束后 9000、9001、19001、5173、5174、5175、5274、
 8000 与 55432 均已释放。
 
+### 2026-08-02 当前候选补充复验
+
+Tauri SDK 继续下沉认证编排、发布独立前端适配，并修复 Windows 发布与项目 E2E 启动后，
+在当前候选上重新执行了完整 Windows 真机验收。不是沿用上面的历史 MSI 或安装目录：本轮
+从提交 `3b470fcc3fd303505607b7eec7d8613343c7992d` 的 bundle 新建干净工作树
+`F:\unified-login-tauri-sdk-3b470fc`，依赖安装、构建和验收后 `git status` 仍为空。
+
+```text
+Windows Tauri 当前候选复验
+- 候选 commit: 3b470fcc3fd303505607b7eec7d8613343c7992d
+- Windows 版本: Windows 11 Home 10.0.26200（build 26200）
+- 默认浏览器及版本: Google Chrome 150.0.7871.187（ChromeHTML）
+- WebView2 版本: 150.0.4078.105
+- rustc host / 版本: rustc 1.96.1 / x86_64-pc-windows-msvc
+- MSI 文件名: 统一登录桌面端_0.1.0_x64_zh-CN.msi
+- MSI 大小: 5,545,984 bytes
+- MSI SHA-256: 0192BCEDA1542F65AB5AE446F7681A4FBA3C0E4AC324DD944A412CBF8E68992A
+
+门禁
+- Tauri SDK pnpm test/typecheck/消费者编译: PASS（TypeScript 21/21；发布包消费者 5/5）
+- Tauri SDK cargo fmt/test/clippy/package: PASS（常规 Rust 76/76）
+- Tauri SDK Credential Manager 交互会话实机往返: PASS（1/1；临时条目最终 0）
+- 桌面端 pnpm test/typecheck/test:acceptance:unit: PASS（14/14；32/32）
+- 桌面壳 cargo fmt/test/clippy: PASS（Rust 6/6）
+- pnpm tauri build --bundles msi: PASS
+- 项目级 E2E 进程辅助测试 / Playwright 真实 Chrome: PASS（4/4；21/21）
+
+真实场景
+- MSI 管理解包载荷与 C:\Program Files 已安装 EXE 的 SHA-256 完全一致: PASS
+- release MSI 安装并从开始菜单启动: PASS
+- 无命令行窗口、无内嵌登录页: PASS
+- 系统默认浏览器首次登录，授权请求含 PKCE S256 与随机 state: PASS
+- 伪造 state 返回 400 且未创建凭据: PASS
+- 浏览器已有会话时 SSO 免输密码: PASS
+- Credential Manager 存在且普通文件无明文凭据: PASS
+- 第一次重启恢复并轮换: PASS
+- 第二次重启使用轮换凭据恢复: PASS
+- 应用登出删除凭据，重启后保持需要登录: PASS
+- 停止应用、手工删除凭据后重启优雅降级: PASS
+- 四轮回调端口均为 127.0.0.1 随机端口且互不重复: PASS（7027、58075、60354、24584）
+- 0.0.0.0 监听 / 新增启用防火墙规则 / 控制台子进程: 0 / 0 / 0
+```
+
+本轮两次重启不仅检查“仍显示已登录”：每轮同时确认认证中心
+`refresh_token_issued_at` 与 Credential Manager 条目的 `LastWritten` 都发生变化，且从不
+读取、打印或保存凭据内容。首次登录和每轮 SSO 都由安装版应用真实点击后调起非 headless
+系统 Chrome；远程验收仍只记录默认浏览器关联、授权请求结构、回环端口和页面状态，不记录
+完整授权 URL、code 或 token。最终应用处于需要登录状态，目标 Credential Manager 条目为 0。
+
 ## 9. 收尾
 
 1. 应用内退出登录，确认测试凭据已删除。
 2. 关闭桌面应用和默认浏览器中的测试页。
 3. 在认证中心窗口按 `Ctrl+C`。
 4. 在数据库窗口按 `Ctrl+C`；`--rm` 会删除本轮容器。
-5. 确认端口释放：
+5. 确认本轮全部端口释放：
 
 ```powershell
-Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue |
-  Where-Object LocalPort -In 9000, 55432
+$remainingListeners = Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue |
+  Where-Object LocalPort -In 9000, 9001, 19001, 5173, 5174, 5175, 5274, 8000, 55432
+if ($remainingListeners) {
+  $remainingListeners | Format-Table -AutoSize
+  throw "验收结束后仍有端口未释放"
+}
 ```
 
 6. 不再保留 MSI 时，可从“设置 → 应用 → 已安装的应用”卸载“统一登录桌面端”。
+7. 回到保存最新版清单的源工作树并删除本轮候选 worktree：
+
+```powershell
+Set-Location -LiteralPath $sourceWorktree
+git worktree remove $candidateWorktree
+```
