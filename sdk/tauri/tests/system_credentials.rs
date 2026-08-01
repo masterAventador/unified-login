@@ -1,12 +1,12 @@
-#![cfg(target_os = "macos")]
+#![cfg(any(target_os = "macos", target_os = "windows"))]
 
 use std::process;
 use std::time::{SystemTime, UNIX_EPOCH};
 use unified_login_tauri::credentials::{CredentialStore, SystemCredentialStore};
 
 #[test]
-#[ignore = "会在 macOS 钥匙串中创建并删除独立临时条目"]
-fn macos_system_keychain_round_trip_is_headless_and_deletes_the_entry() {
+#[ignore = "会在操作系统凭据库中创建并删除独立临时条目"]
+fn system_credential_store_round_trip_is_headless_and_deletes_the_entry() {
     let suffix = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("系统时间必须晚于 Unix epoch")
@@ -18,8 +18,8 @@ fn macos_system_keychain_round_trip_is_headless_and_deletes_the_entry() {
     );
     let account = "refresh-token";
     let secret = format!("temporary-refresh-token-{suffix}");
-    let store = SystemCredentialStore::new(&service, account)
-        .expect("macOS 系统凭据库应能创建临时条目句柄");
+    let store =
+        SystemCredentialStore::new(&service, account).expect("操作系统凭据库应能创建临时条目句柄");
 
     let verification = (|| -> Result<(), String> {
         store
