@@ -146,31 +146,33 @@ sdk/tauri/                      可复用的桌面端套件（若决定抽包）
 
 ## Task 7：Windows 实机复验待办
 
-> 状态：**待用户在 Windows 实机执行**。macOS 的最终 `.app` 静默验收不能替代
-> Windows Credential Manager、默认浏览器与安装包的真实验证；此项不要求在 macOS
-> 上用模拟层绕过。
+> 状态：**已于 2026-08-01 在 Windows 11 真机完成**。验收使用从干净提交
+> `b77e4dd4d4fb0afa8efa731b02cb80c7ca5c2bdf` 全新克隆、构建并重装的 release MSI，
+> 覆盖 Windows Credential Manager、默认浏览器调用、WebView2、随机回环端口、两次
+> 重启轮换和缺失凭据降级；逐项脱敏证据见
+> [`docs/WINDOWS-TAURI-ACCEPTANCE.md`](../../WINDOWS-TAURI-ACCEPTANCE.md)。
 >
 > 可直接执行的 PowerShell 命令、逐项证据和回填模板见
 > [`docs/WINDOWS-TAURI-ACCEPTANCE.md`](../../WINDOWS-TAURI-ACCEPTANCE.md)。
 
-- [ ] 在 Windows 10/11、MSVC Rust 工具链和系统 WebView2 环境中执行：
+- [x] 在 Windows 10/11、MSVC Rust 工具链和系统 WebView2 环境中执行：
   `pnpm install --frozen-lockfile`、`pnpm test`、`pnpm typecheck`、
   `pnpm test:acceptance:unit`、`pnpm tauri build --bundles msi`
-- [ ] 按 `docs/local-development.md` 启动映射到 `127.0.0.1:55432` 的项目专用
+- [x] 按 `docs/local-development.md` 启动映射到 `127.0.0.1:55432` 的项目专用
   PostgreSQL，并用当前分支的 `mvnw.cmd` 在 `127.0.0.1:9000` 启动认证中心
-- [ ] 安装本轮生成的 `.msi`，确认启动的是 release 安装产物，不是 `tauri dev`
-- [ ] 从开始菜单启动时不弹出命令行窗口；应用内不显示登录页或密码输入框
-- [ ] 点登录后由 **Windows 系统默认浏览器**打开授权页，应用内没有密码输入框或内嵌登录页
-- [ ] 全新状态下输入账号密码后，应用显示已登录；浏览器回调页显示“登录成功，可关闭此页”
-- [ ] 默认浏览器已有认证中心会话时，再从桌面端登录无需重新输入密码
-- [ ] 首次登录后退出应用并重新打开，仍能从 Windows Credential Manager 中的
+- [x] 安装本轮生成的 `.msi`，确认启动的是 release 安装产物，不是 `tauri dev`
+- [x] 从开始菜单启动时不弹出命令行窗口；应用内不显示登录页或密码输入框
+- [x] 点登录后由 **Windows 系统默认浏览器**打开授权页，应用内没有密码输入框或内嵌登录页
+- [x] 全新状态下输入账号密码后，应用显示已登录；浏览器回调页显示“登录成功，可关闭此页”
+- [x] 默认浏览器已有认证中心会话时，再从桌面端登录无需重新输入密码
+- [x] 首次登录后退出应用并重新打开，仍能从 Windows Credential Manager 中的
   refresh token 恢复登录；应用配置目录、日志和普通文件中不得出现明文 token
-- [ ] 再退出并重开一次，确认轮换后的 refresh token 仍可继续恢复
-- [ ] 应用内登出后确认对应凭据条目消失，再次重启显示需要登录
-- [ ] 临时删除或拒绝读取凭据后启动应用，应优雅回到需要登录，不得崩溃
-- [ ] 确认回环回调使用 `127.0.0.1` 随机端口，Windows 防火墙没有要求开放公网入站；
+- [x] 再退出并重开一次，确认轮换后的 refresh token 仍可继续恢复
+- [x] 应用内登出后确认对应凭据条目消失，再次重启显示需要登录
+- [x] 临时删除或拒绝读取凭据后启动应用，应优雅回到需要登录，不得崩溃
+- [x] 确认回环回调使用 `127.0.0.1` 随机端口，Windows 防火墙没有要求开放公网入站；
   若出现授权提示，拒绝后不得无限等待或静默卡死
-- [ ] 回填 Windows 版本、默认浏览器、WebView2 版本、`.msi` 构建结果及上述场景的
+- [x] 回填 Windows 版本、默认浏览器、WebView2 版本、`.msi` 构建结果及上述场景的
   通过/失败；证据中不得包含授权码、token 或凭据内容。任一项失败均保持阶段五未完成并
   上报 `BLOCKED`
 

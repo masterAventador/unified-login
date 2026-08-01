@@ -76,6 +76,13 @@ cargo test --locked
 cargo clippy --locked --all-targets -- -D warnings
 cd ..
 
+Push-Location ..\..\sdk\tauri
+cargo fmt --all -- --check
+cargo test --locked
+cargo test --locked --test system_credentials -- --ignored
+cargo clippy --locked --all-targets -- -D warnings
+Pop-Location
+
 pnpm tauri build --bundles msi
 
 $msi = Get-ChildItem .\src-tauri\target\release\bundle\msi\*.msi |
@@ -241,6 +248,58 @@ Windows Tauri 验收
 ```
 
 任一项为 `FAIL` 时不要自行改代码或换测试路径，直接回传模板并标记 `BLOCKED`。
+
+### 2026-08-01 实机结果
+
+```text
+Windows Tauri 验收
+- 候选 commit: b77e4dd4d4fb0afa8efa731b02cb80c7ca5c2bdf
+- 构建工作树: F:\\unified-login-msi-b77e4dd（从候选 commit 的 bundle 全新克隆，构建前后 git status 均为空）
+- Windows 版本: Windows 11 Home 10.0.26200（build 26200）
+- 默认浏览器及版本: Google Chrome 150.0.7871.187（ChromeHTML）
+- WebView2 版本: 150.0.4078.105
+- rustc host / 版本: rustc 1.96.1 / x86_64-pc-windows-msvc
+- MSI 文件名: 统一登录桌面端_0.1.0_x64_zh-CN.msi
+- MSI SHA-256: D943F76E2CDC8D05B094F6CF832A2454E4948249945832E4DC97741AC95375D2
+
+门禁
+- pnpm install --frozen-lockfile: PASS
+- pnpm test: PASS（31/31）
+- pnpm typecheck: PASS
+- pnpm test:acceptance:unit: PASS（22/22）
+- 桌面壳 cargo fmt/test/clippy: PASS（Rust 10/10）
+- Tauri SDK cargo fmt/test/clippy: PASS（常规 Rust 55/55；Credential Manager 实机用例默认忽略）
+- Tauri SDK Credential Manager 实机往返: PASS（1/1；结束后临时凭据条目 0）
+- pnpm tauri build --bundles msi: PASS
+- 项目级 Playwright 真实 Chrome E2E: PASS（19/19）
+
+真实场景
+- release MSI 安装并从开始菜单启动: PASS
+- 无命令行窗口、无内嵌登录页: PASS
+- 系统默认浏览器首次登录: PASS
+- 浏览器已有会话时 SSO 免输密码: PASS
+- Credential Manager 存在且普通文件无明文凭据: PASS
+- 第一次重启恢复并轮换: PASS
+- 第二次重启使用轮换凭据恢复: PASS
+- 应用登出删除凭据: PASS
+- 删除凭据后优雅降级: PASS
+- 127.0.0.1 随机端口且无公网防火墙放行: PASS
+```
+
+补充说明：验收通过 SSH 驱动登录用户的交互式计划任务执行。远程会话无法提供可截取的
+Chrome 顶层窗口，因此默认浏览器这一项采用三组互相独立的证据闭环：Windows 默认浏览器
+关联为 ChromeHTML；应用点击登录后出现非 headless 的默认 Chrome 进程；进程收到的授权
+请求经脱敏脚本验证包含候选应用生成的 client、随机 `state`、PKCE 和回环地址。注册、密码
+登录、回调成功页与保留 Cookie 后的零次登录页跳转，则在同一台真机、同版本 Chrome 和从
+上述干净工作树构建、重装的 release 应用上完成。该限制只影响远程桌面截图，不影响默认
+浏览器调用或 OAuth 行为证据。
+
+另外确认：安装目录为 `C:\Program Files\统一登录桌面端\`，开始菜单快捷方式可启动且
+应用保持单实例；运行期间没有控制台子进程、没有新增启用的 Windows 防火墙规则、没有监听
+`0.0.0.0`，应用数据目录中没有以 token、credential 或 secret 命名的明文凭据文件。最终
+项目级 E2E 另在 `b77e4dd` 的全新 F 盘副本上启动全部生产构建服务并使用系统 Chrome
+无头通道执行，19 项全部通过；结束后 9000、9001、19001、5173、5174、5175、5274、
+8000 与 55432 均已释放。
 
 ## 9. 收尾
 
