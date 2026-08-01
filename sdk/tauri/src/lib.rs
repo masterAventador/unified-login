@@ -5,4 +5,5 @@ mod issuer;
 pub mod login;
 pub mod loopback;
 pub mod pkce;
+pub mod plugin;
 pub mod session;

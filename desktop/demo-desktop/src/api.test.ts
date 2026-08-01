@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 
 import {
+  TauriAuthError,
   TauriAuthClient,
   type TauriAuthClientApi,
 } from '../../../sdk/tauri/ts/index'
@@ -19,8 +20,81 @@ type WebAuthClientApi = Pick<
 const PUBLIC_API_MATCHES_WEB_SDK: Assert<
   Equal<TauriAuthClientApi, WebAuthClientApi>
 > = true
+const LOGIN_COMMAND = 'plugin:unified-login-tauri|login'
+const LOGOUT_COMMAND = 'plugin:unified-login-tauri|logout'
+const GET_ACCESS_TOKEN_COMMAND =
+  'plugin:unified-login-tauri|get_access_token'
 
 describe('TauriAuthClient', () => {
+  it('只调用 SDK 插件命名空间中的受权限保护命令', async () => {
+    const invoke = vi.fn().mockResolvedValueOnce('authenticated')
+      .mockResolvedValueOnce('access-secret')
+      .mockResolvedValueOnce(undefined)
+    const client = new TauriAuthClient(invoke)
+
+    await client.login()
+    await client.getAccessToken()
+    await client.logout()
+
+    expect(invoke.mock.calls).toEqual([
+      ['plugin:unified-login-tauri|login'],
+      ['plugin:unified-login-tauri|get_access_token'],
+      ['plugin:unified-login-tauri|logout'],
+    ])
+  })
+
+  it('将 Rust 结构化错误转换为稳定的 TauriAuthError', async () => {
+    const cause = {
+      code: 'loginRequired',
+      message: '当前没有可用的登录令牌',
+    }
+    const client = new TauriAuthClient(vi.fn().mockRejectedValue(cause))
+
+    const result = client.getAccessToken().catch((error: unknown) => error)
+
+    await expect(result).resolves.toBeInstanceOf(TauriAuthError)
+    await expect(result).resolves.toMatchObject({
+      name: 'TauriAuthError',
+      code: 'loginRequired',
+      message: '当前没有可用的登录令牌',
+      cause,
+    })
+  })
+
+  it('将未知 IPC 异常收口为当前操作的稳定错误码且不暴露原始消息', async () => {
+    const cause = new Error('keychain path /Users/private 不可读')
+    const client = new TauriAuthClient(vi.fn().mockRejectedValue(cause))
+
+    const result = client.logout().catch((error: unknown) => error)
+
+    await expect(result).resolves.toBeInstanceOf(TauriAuthError)
+    await expect(result).resolves.toMatchObject({
+      code: 'logoutFailed',
+      message: '退出登录未完成',
+      cause,
+    })
+  })
+
+  it('本地并发保护也返回与 Rust 相同的结构化错误', async () => {
+    let completeLogin!: () => void
+    const client = new TauriAuthClient(vi.fn().mockReturnValue(
+      new Promise<void>((resolve) => {
+        completeLogin = resolve
+      }),
+    ))
+
+    const login = client.login()
+    const result = client.getAccessToken().catch((error: unknown) => error)
+    completeLogin()
+
+    await expect(login).resolves.toBeUndefined()
+    await expect(result).resolves.toBeInstanceOf(TauriAuthError)
+    await expect(result).resolves.toMatchObject({
+      code: 'loginInProgress',
+      message: '登录正在进行',
+    })
+  })
+
   it('运行时原型只公开与 Web SDK 相同的四个方法', () => {
     expect(PUBLIC_API_MATCHES_WEB_SDK).toBe(true)
     expect(Object.getOwnPropertyNames(TauriAuthClient.prototype).sort()).toEqual([
@@ -40,7 +114,7 @@ describe('TauriAuthClient', () => {
 
     await expect(client.login()).resolves.toBeUndefined()
 
-    expect(invoke).toHaveBeenCalledExactlyOnceWith('login')
+    expect(invoke).toHaveBeenCalledExactlyOnceWith(LOGIN_COMMAND)
     expect(listener).toHaveBeenCalledExactlyOnceWith(true)
   })
 
@@ -50,7 +124,7 @@ describe('TauriAuthClient', () => {
 
     await client.login({ prompt: 'login' })
 
-    expect(invoke).toHaveBeenCalledExactlyOnceWith('login', {
+    expect(invoke).toHaveBeenCalledExactlyOnceWith(LOGIN_COMMAND, {
       prompt: 'login',
     })
   })
@@ -74,7 +148,7 @@ describe('TauriAuthClient', () => {
         { status: 'fulfilled', value: undefined },
         { status: 'fulfilled', value: undefined },
       ])
-    expect(invoke).toHaveBeenCalledExactlyOnceWith('login')
+    expect(invoke).toHaveBeenCalledExactlyOnceWith(LOGIN_COMMAND)
     expect(listener).toHaveBeenCalledExactlyOnceWith(true)
   })
 
@@ -94,18 +168,18 @@ describe('TauriAuthClient', () => {
     await expect(conflictingLogin).rejects.toThrow(
       '已有不同选项的登录流程正在进行',
     )
-    expect(invoke).toHaveBeenCalledExactlyOnceWith('login')
+    expect(invoke).toHaveBeenCalledExactlyOnceWith(LOGIN_COMMAND)
   })
 
   it('重新登录进行中拒绝读取前一个账号的 access token', async () => {
     let completeLogin!: () => void
     const invoke = vi.fn((command: string) => {
-      if (command === 'login') {
+      if (command === LOGIN_COMMAND) {
         return new Promise<void>((resolve) => {
           completeLogin = resolve
         })
       }
-      if (command === 'get_access_token') {
+      if (command === GET_ACCESS_TOKEN_COMMAND) {
         return Promise.resolve('previous-account-access-secret')
       }
       return Promise.resolve(undefined)
@@ -120,8 +194,8 @@ describe('TauriAuthClient', () => {
     await expect(accessToken).rejects.toThrow('登录正在进行')
     await expect(login).resolves.toBeUndefined()
     expect(invoke.mock.calls).toEqual([
-      ['get_access_token'],
-      ['login', { prompt: 'login' }],
+      [GET_ACCESS_TOKEN_COMMAND],
+      [LOGIN_COMMAND, { prompt: 'login' }],
     ])
   })
 
@@ -142,12 +216,16 @@ describe('TauriAuthClient', () => {
     const retriedLogin = client.login()
     rejectCancelledLogin(new Error('旧登录已取消'))
 
-    await expect(firstLoginResult).resolves.toEqual(new Error('旧登录已取消'))
+    await expect(firstLoginResult).resolves.toMatchObject({
+      code: 'loginFailed',
+      message: '登录未完成，请重试',
+      cause: new Error('旧登录已取消'),
+    })
     await expect(retriedLogin).resolves.toBeUndefined()
     expect(invoke.mock.calls).toEqual([
-      ['login'],
-      ['logout'],
-      ['login'],
+      [LOGIN_COMMAND],
+      [LOGOUT_COMMAND],
+      [LOGIN_COMMAND],
     ])
   })
 
@@ -159,7 +237,7 @@ describe('TauriAuthClient', () => {
 
     await expect(client.getAccessToken()).resolves.toBe('access-secret')
 
-    expect(invoke).toHaveBeenCalledExactlyOnceWith('get_access_token')
+    expect(invoke).toHaveBeenCalledExactlyOnceWith(GET_ACCESS_TOKEN_COMMAND)
     expect(listener).toHaveBeenCalledExactlyOnceWith(true)
   })
 
@@ -196,9 +274,9 @@ describe('TauriAuthClient', () => {
     await client.logout()
 
     expect(invoke.mock.calls).toEqual([
-      ['get_access_token'],
-      ['logout'],
-      ['logout'],
+      [GET_ACCESS_TOKEN_COMMAND],
+      [LOGOUT_COMMAND],
+      [LOGOUT_COMMAND],
     ])
     expect(listener.mock.calls).toEqual([[true], [false]])
   })
@@ -206,10 +284,10 @@ describe('TauriAuthClient', () => {
   it('重复登出复用正在进行的操作且只通知一次退出', async () => {
     let completeLogout!: () => void
     const invoke = vi.fn((command: string) => {
-      if (command === 'get_access_token') {
+      if (command === GET_ACCESS_TOKEN_COMMAND) {
         return Promise.resolve('access-secret')
       }
-      if (command === 'logout') {
+      if (command === LOGOUT_COMMAND) {
         if (completeLogout !== undefined) {
           return Promise.reject({ code: 'logoutFailed' })
         }
@@ -234,8 +312,8 @@ describe('TauriAuthClient', () => {
         { status: 'fulfilled', value: undefined },
       ])
     expect(invoke.mock.calls).toEqual([
-      ['get_access_token'],
-      ['logout'],
+      [GET_ACCESS_TOKEN_COMMAND],
+      [LOGOUT_COMMAND],
     ])
     expect(listener.mock.calls).toEqual([[true], [false]])
   })
@@ -243,10 +321,10 @@ describe('TauriAuthClient', () => {
   it('登出进行中拒绝新登录且不使成功登出失效', async () => {
     let completeLogout!: () => void
     const invoke = vi.fn((command: string) => {
-      if (command === 'get_access_token') {
+      if (command === GET_ACCESS_TOKEN_COMMAND) {
         return Promise.resolve('access-secret')
       }
-      if (command === 'logout') {
+      if (command === LOGOUT_COMMAND) {
         return new Promise<void>((resolve) => {
           completeLogout = resolve
         })
@@ -262,11 +340,14 @@ describe('TauriAuthClient', () => {
     const login = client.login()
     completeLogout()
 
-    await expect(login).rejects.toThrow('退出登录正在进行')
+    await expect(login).rejects.toMatchObject({
+      code: 'loginInProgress',
+      message: '退出登录正在进行',
+    })
     await expect(logout).resolves.toBeUndefined()
     expect(invoke.mock.calls).toEqual([
-      ['get_access_token'],
-      ['logout'],
+      [GET_ACCESS_TOKEN_COMMAND],
+      [LOGOUT_COMMAND],
     ])
     expect(listener.mock.calls).toEqual([[true], [false]])
   })
@@ -274,10 +355,10 @@ describe('TauriAuthClient', () => {
   it('登出进行中拒绝取得 access token 且不恢复认证状态', async () => {
     let completeLogout!: () => void
     const invoke = vi.fn((command: string) => {
-      if (command === 'get_access_token') {
+      if (command === GET_ACCESS_TOKEN_COMMAND) {
         return Promise.resolve('stale-access-secret')
       }
-      if (command === 'logout') {
+      if (command === LOGOUT_COMMAND) {
         return new Promise<void>((resolve) => {
           completeLogout = resolve
         })
@@ -295,7 +376,7 @@ describe('TauriAuthClient', () => {
     await expect(accessToken).rejects.toThrow('退出登录正在进行')
     await expect(logout).resolves.toBeUndefined()
     expect(invoke.mock.calls).toEqual([
-      ['logout'],
+      [LOGOUT_COMMAND],
     ])
     expect(listener).not.toHaveBeenCalledWith(true)
   })
@@ -335,7 +416,7 @@ describe('TauriAuthClient', () => {
   it('登出开始后拒绝更早发出的 access token 结果', async () => {
     let completeAccessToken!: (value: string) => void
     const invoke = vi.fn((command: string) => {
-      if (command === 'get_access_token') {
+      if (command === GET_ACCESS_TOKEN_COMMAND) {
         return new Promise<string>((resolve) => {
           completeAccessToken = resolve
         })
@@ -356,7 +437,7 @@ describe('TauriAuthClient', () => {
 
   it('认证通知同步触发登出后拒绝旧令牌并停止过期通知', async () => {
     const invoke = vi.fn(async (command: string) => (
-      command === 'get_access_token' ? 'access-secret' : undefined
+      command === GET_ACCESS_TOKEN_COMMAND ? 'access-secret' : undefined
     ))
     const client = new TauriAuthClient(invoke)
     let logout: Promise<void> | undefined

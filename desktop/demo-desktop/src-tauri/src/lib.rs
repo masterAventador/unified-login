@@ -1,9 +1,6 @@
-use std::sync::{Arc, Mutex as StdMutex};
-use tauri::{AppHandle, Manager, State};
-use unified_login_tauri::auth::{AuthClient, AuthConfig, AuthError, AuthErrorCode, LoginOptions};
-use unified_login_tauri::credentials::{
-    CredentialError, MigratingCredentialStore, SystemCredentialStore,
-};
+use tauri::Manager;
+use unified_login_tauri::auth::{AuthConfig, AuthError};
+use unified_login_tauri::plugin::Builder as AuthPluginBuilder;
 
 const CLIENT_ID: &str = "demo-desktop";
 const CREDENTIAL_SERVICE: &str = "com.aventador.unified-login.demo-desktop";
@@ -93,147 +90,44 @@ fn credential_service(value: Option<&str>) -> &str {
         .unwrap_or(CREDENTIAL_SERVICE)
 }
 
-struct AppState {
-    auth: StdMutex<AppAuthState>,
-    auth_configuration: AuthConfiguration,
+fn desktop_auth_config(issuer: &str, credential_service: &str) -> Result<AuthConfig, AuthError> {
+    AuthConfig::builder(issuer, CLIENT_ID, credential_service)
+        .credential_account(CREDENTIAL_ACCOUNT)
+        .build()
 }
 
-type CredentialStoreFactory =
-    dyn Fn(&str, &str) -> Result<SystemCredentialStore, CredentialError> + Send + Sync;
-
-struct AuthConfiguration {
-    issuer: String,
-    credential_service: String,
-    store_factory: Arc<CredentialStoreFactory>,
-}
-
-enum AppAuthState {
-    Ready(Arc<DesktopAuthClient>),
-    Unavailable(AuthError),
-}
-
-type CompatibleCredentialStore =
-    MigratingCredentialStore<SystemCredentialStore, SystemCredentialStore>;
-type DesktopAuthClient = AuthClient<CompatibleCredentialStore>;
-
-impl AppState {
-    fn new() -> Self {
-        let issuer =
-            std::env::var("UNIFIED_LOGIN_ISSUER").unwrap_or_else(|_| DEFAULT_ISSUER.to_owned());
-        let credential_service_override = std::env::var(CREDENTIAL_SERVICE_ENV).ok();
-        Self::new_with_store_factory(
-            issuer,
-            credential_service(credential_service_override.as_deref()),
-            SystemCredentialStore::new,
-        )
-    }
-
-    fn new_with_store_factory<F>(issuer: String, credential_service: &str, store_factory: F) -> Self
-    where
-        F: Fn(&str, &str) -> Result<SystemCredentialStore, CredentialError> + Send + Sync + 'static,
-    {
-        let store_factory: Arc<CredentialStoreFactory> = Arc::new(store_factory);
-        let auth = Self::initialize_auth(&issuer, credential_service, store_factory.as_ref())
-            .map_or_else(AppAuthState::Unavailable, |resources| {
-                AppAuthState::Ready(Arc::new(resources))
-            });
-        Self {
-            auth: StdMutex::new(auth),
-            auth_configuration: AuthConfiguration {
-                issuer,
-                credential_service: credential_service.to_owned(),
-                store_factory,
-            },
-        }
-    }
-
-    fn initialize_auth(
-        issuer: &str,
-        credential_service: &str,
-        store_factory: &CredentialStoreFactory,
-    ) -> Result<DesktopAuthClient, AuthError> {
-        let config = AuthConfig::builder(issuer, CLIENT_ID, credential_service)
-            .credential_account(CREDENTIAL_ACCOUNT)
-            .build()?;
-        let current_store = store_factory(credential_service, config.credential_account())
-            .map_err(AuthError::from)?;
-        let legacy_account = config.legacy_credential_account().ok_or(AuthError {
-            code: AuthErrorCode::Configuration,
-            message: "桌面端认证配置无效",
-        })?;
-        let legacy_store =
-            store_factory(credential_service, legacy_account).map_err(AuthError::from)?;
-        let store = MigratingCredentialStore::new(current_store, legacy_store);
-        AuthClient::new(config, store)
-    }
-
-    fn auth_client(&self) -> Result<Arc<DesktopAuthClient>, AuthError> {
-        let mut auth = self.auth.lock().expect("认证资源锁不应中毒");
-        if matches!(
-            &*auth,
-            AppAuthState::Unavailable(error) if error.code == AuthErrorCode::Credentials
-        ) {
-            *auth = Self::initialize_auth(
-                &self.auth_configuration.issuer,
-                &self.auth_configuration.credential_service,
-                self.auth_configuration.store_factory.as_ref(),
-            )
-            .map_or_else(AppAuthState::Unavailable, |resources| {
-                AppAuthState::Ready(Arc::new(resources))
-            });
-        }
-        match &*auth {
-            AppAuthState::Ready(resources) => Ok(Arc::clone(resources)),
-            AppAuthState::Unavailable(error) => Err(*error),
-        }
-    }
-}
-
-#[tauri::command]
-async fn get_access_token(state: State<'_, AppState>) -> Result<String, AuthError> {
-    state.auth_client()?.access_token().await
-}
-
-#[tauri::command]
-async fn login(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    prompt: Option<String>,
-) -> Result<&'static str, AuthError> {
-    let options = LoginOptions::from_prompt(prompt.as_deref())?;
-    state
-        .auth_client()?
-        .login(options, |authorization_url| {
-            tauri_plugin_opener::open_url(authorization_url, None::<&str>)
-                .map_err(|error| error.to_string())
-        })
-        .await?;
-    // 令牌已经成功保存后，窗口聚焦只能算尽力而为；不能因为窗口此刻正在关闭、
-    // 被系统拒绝抢焦点等纯 UI 原因，把一次成功登录错误地报告成失败。
-    if current_window_startup_mode().should_focus_after_login()
-        && let Some(window) = app.get_webview_window("main")
-    {
-        let _ = window.set_focus();
-    }
-    Ok("authenticated")
-}
-
-#[tauri::command]
-async fn logout(state: State<'_, AppState>) -> Result<(), AuthError> {
-    state.auth_client()?.logout().await
+fn current_auth_config() -> Result<AuthConfig, AuthError> {
+    let issuer =
+        std::env::var("UNIFIED_LOGIN_ISSUER").unwrap_or_else(|_| DEFAULT_ISSUER.to_owned());
+    let credential_service_override = std::env::var(CREDENTIAL_SERVICE_ENV).ok();
+    desktop_auth_config(
+        &issuer,
+        credential_service(credential_service_override.as_deref()),
+    )
 }
 
 pub fn run() {
     let startup_mode = current_window_startup_mode();
     let setup_mode = startup_mode;
+    let auth_plugin = AuthPluginBuilder::from_config_result(current_auth_config())
+        .on_login_success(|app| {
+            // 认证令牌已经成功保存后，窗口聚焦只能算尽力而为；纯 UI 原因不能把成功登录
+            // 错误地报告成失败。窗口标签和启动模式仍完全属于应用自身。
+            if current_window_startup_mode().should_focus_after_login()
+                && let Some(window) = app.get_webview_window("main")
+            {
+                let _ = window.set_focus();
+            }
+        })
+        .build();
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _, _| {
             if let Some(window) = app.get_webview_window("main") {
                 activate_existing_instance(&window, &current_window_startup_mode());
             }
         }))
+        .plugin(auth_plugin)
         .setup(move |app| {
-            app.manage(AppState::new());
             let window = app
                 .get_webview_window("main")
                 .ok_or("找不到桌面应用主窗口")?;
@@ -242,7 +136,6 @@ pub fn run() {
             }
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![login, get_access_token, logout])
         .build(tauri::generate_context!())
         .expect("Tauri 桌面应用构建失败");
     #[cfg(target_os = "macos")]
@@ -252,16 +145,17 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tauri::ipc::{CallbackFn, InvokeBody};
+    use tauri::test::{INVOKE_KEY, get_ipc_response, mock_builder};
+    use tauri::webview::InvokeRequest;
+    use unified_login_tauri::auth::AuthConfig;
+    use unified_login_tauri::plugin::Builder as AuthPluginBuilder;
 
     use super::{
-        ActivationPolicyTarget, AppState, CREDENTIAL_SERVICE, DEFAULT_ISSUER,
-        ExistingInstanceTarget, WindowStartupMode, activate_existing_instance,
-        configure_macos_activation, credential_service, window_startup_mode,
+        ActivationPolicyTarget, CREDENTIAL_SERVICE, DEFAULT_ISSUER, ExistingInstanceTarget,
+        WindowStartupMode, activate_existing_instance, configure_macos_activation,
+        credential_service, desktop_auth_config, window_startup_mode,
     };
-    use unified_login_tauri::auth::AuthErrorCode;
-    use unified_login_tauri::credentials::{CredentialError, SystemCredentialStore};
 
     #[test]
     fn automation_window_mode_is_hidden_without_changing_the_default() {
@@ -319,43 +213,51 @@ mod tests {
     }
 
     #[test]
-    fn credential_store_initialization_failure_becomes_managed_state() {
-        let state = AppState::new_with_store_factory(
-            DEFAULT_ISSUER.to_owned(),
-            CREDENTIAL_SERVICE,
-            |_, _| {
-                Err(CredentialError::Unavailable(
-                    "用户拒绝访问凭据库".to_owned(),
-                ))
-            },
-        );
+    fn application_owns_only_its_authentication_configuration() {
+        let config = desktop_auth_config(DEFAULT_ISSUER, CREDENTIAL_SERVICE)
+            .expect("桌面示例认证配置应有效");
 
-        assert!(matches!(
-            state.auth_client(),
-            Err(error) if error.code == AuthErrorCode::Credentials
-        ));
+        assert_eq!(config.issuer(), "http://localhost:9000/");
+        assert_eq!(config.client_id(), "demo-desktop");
+        assert_eq!(config.credential_service(), CREDENTIAL_SERVICE);
+        assert_eq!(config.scopes(), ["openid"]);
     }
 
     #[test]
-    fn credential_store_initialization_is_retried_after_a_temporary_failure() {
-        let attempts = Arc::new(AtomicUsize::new(0));
-        let attempts_for_factory = Arc::clone(&attempts);
-        let state = AppState::new_with_store_factory(
-            DEFAULT_ISSUER.to_owned(),
-            CREDENTIAL_SERVICE,
-            move |service, account| {
-                if attempts_for_factory.fetch_add(1, Ordering::SeqCst) == 0 {
-                    return Err(CredentialError::Unavailable("凭据库暂时不可用".to_owned()));
-                }
-                SystemCredentialStore::new(service, account)
-            },
-        );
+    fn configured_capability_reaches_the_namespaced_sdk_command() {
+        let invalid_config = AuthConfig::builder(
+            "not a valid issuer",
+            "desktop-client",
+            "com.example.desktop",
+        )
+        .build();
+        let app = mock_builder()
+            .plugin(AuthPluginBuilder::from_config_result(invalid_config).build())
+            .build(tauri::generate_context!("tauri.conf.json", test = true))
+            .expect("应使用生产 capability 构建测试应用");
+        let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .expect("应创建受 default capability 管理的主窗口");
 
-        assert!(
-            state.auth_client().is_ok(),
-            "系统凭据库恢复后，同一个应用实例的重试必须重新初始化认证资源"
+        let response = get_ipc_response(
+            &webview,
+            InvokeRequest {
+                cmd: "plugin:unified-login-tauri|get_access_token".into(),
+                callback: CallbackFn(0),
+                error: CallbackFn(1),
+                url: "tauri://localhost".parse().expect("测试 IPC URL 应有效"),
+                body: InvokeBody::default(),
+                headers: Default::default(),
+                invoke_key: INVOKE_KEY.to_owned(),
+            },
+        )
+        .expect_err("无效配置应由 SDK 命令返回结构化错误");
+
+        assert_eq!(
+            response.get("code").and_then(|value| value.as_str()),
+            Some("configuration"),
+            "命令必须真实进入 SDK 插件，不能被 ACL 拒绝为 Plugin not found",
         );
-        assert_eq!(attempts.load(Ordering::SeqCst), 3);
     }
 
     #[derive(Default)]
