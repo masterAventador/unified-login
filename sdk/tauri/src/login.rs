@@ -161,6 +161,8 @@ mod tests {
     use super::{LoginAttempt, LoginCancellation, LoginError};
     use crate::exchange::TokenClient;
     use crate::loopback::LoopbackError;
+    use crate::pkce::challenge_for;
+    use std::collections::HashMap;
     use std::io::{Read, Write};
     use std::net::{SocketAddr, TcpListener, TcpStream};
     use std::sync::mpsc::{self, Receiver};
@@ -245,6 +247,66 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn completes_the_real_loopback_pkce_and_token_exchange_chain() {
+        let (issuer, token_request) = successful_token_endpoint();
+        let token_client = TokenClient::new(&issuer, "demo-desktop").expect("令牌客户端应能创建");
+        let attempt = LoginAttempt::start(&issuer, "demo-desktop").expect("登录尝试应能创建");
+        let redirect_uri = attempt.redirect_uri().to_owned();
+        let callback_address = callback_address(&redirect_uri);
+        let authorization_url = Url::parse(attempt.authorization_url()).expect("授权地址应合法");
+        let authorization_parameters = authorization_url
+            .query_pairs()
+            .map(|(name, value)| (name.into_owned(), value.into_owned()))
+            .collect::<HashMap<_, _>>();
+        let expected_state = authorization_parameters
+            .get("state")
+            .expect("授权请求应包含 state")
+            .to_owned();
+        let expected_challenge = authorization_parameters
+            .get("code_challenge")
+            .expect("授权请求应包含 PKCE challenge")
+            .to_owned();
+
+        let browser_callback = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(20));
+            send_get(
+                callback_address,
+                &format!("/callback?code=one-time-code&state={expected_state}"),
+            )
+        });
+
+        let tokens = attempt
+            .complete(&token_client, Duration::from_secs(2))
+            .await
+            .expect("完整授权回调应换到令牌");
+
+        assert_eq!(tokens.access_token, "access-one");
+        assert_eq!(tokens.refresh_token, "refresh-one");
+        assert!(
+            browser_callback
+                .join()
+                .expect("浏览器回调线程不应 panic")
+                .starts_with("HTTP/1.1 200")
+        );
+        let token_request = token_request.recv().expect("应捕获真实令牌交换请求");
+        assert_eq!(
+            token_request.get("code").map(String::as_str),
+            Some("one-time-code")
+        );
+        assert_eq!(
+            token_request.get("redirect_uri").map(String::as_str),
+            Some(redirect_uri.as_str())
+        );
+        assert_eq!(
+            token_request
+                .get("code_verifier")
+                .map(|verifier| challenge_for(verifier)),
+            Some(expected_challenge),
+            "换令牌使用的 verifier 必须与浏览器授权请求中的 challenge 匹配"
+        );
+    }
+
+    #[tokio::test]
     async fn forged_state_is_rejected_before_any_token_request() {
         let (issuer, token_request_seen) = fake_token_endpoint();
         let token_client = TokenClient::new(&issuer, "demo-desktop").expect("令牌客户端应能创建");
@@ -287,6 +349,13 @@ mod tests {
         let attempt =
             LoginAttempt::start("http://localhost:9000", "demo-desktop").expect("登录尝试应能创建");
         let callback_address = callback_address(attempt.redirect_uri());
+        let expected_state = Url::parse(attempt.authorization_url())
+            .expect("授权地址应合法")
+            .query_pairs()
+            .find_map(|(name, value)| (name == "state").then(|| value.into_owned()))
+            .expect("授权请求应包含 state");
+        let mut original_connection =
+            TcpStream::connect(callback_address).expect("应能预先连接原回环监听");
         let cancellation = LoginCancellation::new();
         let cancellation_for_task = cancellation.clone();
         let completion = tokio::spawn(async move {
@@ -307,9 +376,21 @@ mod tests {
             result,
             Err(LoginError::Loopback(LoopbackError::Cancelled))
         ));
+        let mut response = String::new();
+        if original_connection
+            .set_read_timeout(Some(Duration::from_millis(200)))
+            .is_ok()
+        {
+            let _ = write!(
+                original_connection,
+                "GET /callback?code=late-code&state={expected_state} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\n\r\n",
+                callback_address.port()
+            );
+            let _ = original_connection.read_to_string(&mut response);
+        }
         assert!(
-            TcpStream::connect_timeout(&callback_address, Duration::from_millis(200)).is_err(),
-            "取消后必须立即关闭临时回环监听端口"
+            !response.starts_with("HTTP/1.1 200"),
+            "取消后原回环监听的连接绝不能再处理迟到回调"
         );
     }
 
@@ -340,6 +421,39 @@ mod tests {
                 .respond(
                     Response::from_string(
                         r#"{"access_token":"stolen","refresh_token":"stolen","expires_in":900}"#,
+                    )
+                    .with_status_code(StatusCode(200))
+                    .with_header(content_type),
+                )
+                .expect("假令牌响应应可返回");
+        });
+
+        (format!("http://{address}"), receiver)
+    }
+
+    fn successful_token_endpoint() -> (String, Receiver<HashMap<String, String>>) {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("假令牌端点应能绑定");
+        let address = listener.local_addr().expect("假令牌端点应有地址");
+        let server = Server::from_listener(listener, None).expect("假令牌端点应能启动");
+        let (sender, receiver) = mpsc::channel();
+
+        thread::spawn(move || {
+            let mut request = server.recv().expect("应收到真实令牌交换请求");
+            let mut body = String::new();
+            request
+                .as_reader()
+                .read_to_string(&mut body)
+                .expect("令牌请求表单应可读取");
+            let form = url::form_urlencoded::parse(body.as_bytes())
+                .map(|(name, value)| (name.into_owned(), value.into_owned()))
+                .collect();
+            sender.send(form).expect("令牌请求应可发送给测试线程");
+            let content_type = Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
+                .expect("静态响应头应合法");
+            request
+                .respond(
+                    Response::from_string(
+                        r#"{"access_token":"access-one","refresh_token":"refresh-one","expires_in":900,"token_type":"Bearer"}"#,
                     )
                     .with_status_code(StatusCode(200))
                     .with_header(content_type),
